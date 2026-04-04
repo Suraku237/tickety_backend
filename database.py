@@ -4,7 +4,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy import Column, Integer, String
 
 # Replace 'your_password' with your real MySQL root password
-SQLALCHEMY_DATABASE_URL = "mysql+pymysql://root:your_password@localhost/tickety"
+SQLALCHEMY_DATABASE_URL = "mysql+pymysql://root:Sololeveling123@localhost/tickety"
 
 engine = create_engine(SQLALCHEMY_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
