@@ -10,24 +10,28 @@ from flask import current_app
 #   - Send OTP emails via Brevo API
 # OOP Principle: Single Responsibility, Abstraction
 # =============================================================
-# services/otp_service.py
 class OTPService:
-    # ... previous generate method ...
+
+    CODE_LENGTH = 6
+
+    def generate(self) -> str:
+        """Generate a cryptographically secure 6-digit OTP code."""
+        return str(secrets.randbelow(10 ** self.CODE_LENGTH)).zfill(self.CODE_LENGTH)
 
     def send(self, email: str, username: str, otp_code: str) -> bool:
-        # Fetch config from app factory
+        """
+        Send an OTP verification email to the user via Brevo.
+        Returns True on success, False on failure.
+        """
         api_key      = current_app.config.get("BREVO_API_KEY")
-        
+        sender_email = current_app.config.get("MAIL_DEFAULT_SENDER")
+
         payload = {
-            "sender": {
-                "email": "kwetejunior9@gmail.com", # Your specific verified sender
-                "name": "TICKETY"
-            },
+            "sender": {"email": sender_email, "name": "QLINE"},
             "to": [{"email": email}],
-            "subject": f"{otp_code} is your TICKETY verification code",
+            "subject": "Your QLINE Verification Code",
             "htmlContent": self._build_email_html(username, otp_code),
         }
-        # ... rest of the send logic using requests.post
 
         headers = {
             "accept":       "application/json",
