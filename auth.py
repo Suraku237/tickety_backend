@@ -4,7 +4,6 @@ from repositories.otp_repository import OTPRepository
 from services.otp_service import OTPService
 from utils.validator import Validator
 from utils.password_service import PasswordService
-from models import db
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -17,6 +16,11 @@ auth_bp = Blueprint("auth", __name__)
 #   - Enforce source-based access control on login
 #   - Orchestrate collaboration between services & repositories
 # OOP Principle: Single Responsibility, Dependency Injection
+#
+# NOTE: Dependencies are instantiated inside each route method
+# (lazy initialization) so they are created inside an active
+# Flask application context — required for SQLAlchemy to work
+# correctly under Gunicorn workers.
 # =============================================================
 class AuthController:
 
@@ -28,24 +32,29 @@ class AuthController:
     SOURCE_MOBILE = 'mobile'
     SOURCE_WEB    = 'web'
 
-    def __init__(self):
-        self.user_repo        = UserRepository()
-        self.otp_repo         = OTPRepository()
-        self.otp_service      = OTPService()
-        self.validator        = Validator()
-        self.password_service = PasswordService()
+    def _get_deps(self):
+        """
+        Lazily instantiate dependencies inside the request context.
+        This ensures SQLAlchemy has an active app context when
+        repositories are created — critical for Gunicorn workers.
+        """
+        return (
+            UserRepository(),
+            OTPRepository(),
+            OTPService(),
+            Validator(),
+            PasswordService(),
+        )
 
     # ----------------------------------------------------------
     # PRIVATE: Resolve role from request source header
-    # mobile → client | web → admin
     # ----------------------------------------------------------
     def _resolve_role(self) -> str:
         source = request.headers.get('X-App-Source', self.SOURCE_MOBILE).lower()
         return self.ROLE_ADMIN if source == self.SOURCE_WEB else self.ROLE_CLIENT
 
     # ----------------------------------------------------------
-    # PRIVATE: Validate that the login source matches the role
-    # Prevents clients logging in via web and admins via mobile
+    # PRIVATE: Validate login source matches user role
     # ----------------------------------------------------------
     def _is_authorized_source(self, user) -> bool:
         source = request.headers.get('X-App-Source', self.SOURCE_MOBILE).lower()
@@ -57,120 +66,114 @@ class AuthController:
 
     # ----------------------------------------------------------
     # REGISTER
-    # Role is assigned automatically — never from user input
     # ----------------------------------------------------------
     def register(self):
+        user_repo, otp_repo, otp_service, validator, password_service = self._get_deps()
+
         data     = request.get_json()
         username = data.get("username", "").strip()
         email    = data.get("email", "").lower().strip()
         password = data.get("password", "")
 
-        # Validate inputs via Validator
-        error = self.validator.validate_registration(username, email, password)
+        error = validator.validate_registration(username, email, password)
         if error:
             return jsonify({"success": False, "message": error}), 400
 
-        # Check uniqueness via UserRepository
-        if self.user_repo.find_by_email(email):
+        if user_repo.find_by_email(email):
             return jsonify({"success": False, "message": "Email already registered"}), 400
-        if self.user_repo.find_by_username(username):
+        if user_repo.find_by_username(username):
             return jsonify({"success": False, "message": "Username already taken"}), 400
 
         try:
-            # Resolve role from request source — no user input involved
             role      = self._resolve_role()
-            hashed_pw = self.password_service.hash(password)
+            hashed_pw = password_service.hash(password)
 
-            # Create user with resolved role via UserRepository
-            self.user_repo.create(username, email, hashed_pw, role)
-            self.user_repo.flush()
+            user_repo.create(username, email, hashed_pw, role)
+            user_repo.flush()
 
-            # Generate & store OTP via OTPRepository
-            otp_code = self.otp_service.generate()
-            self.otp_repo.upsert(email, otp_code)
+            otp_code = otp_service.generate()
+            otp_repo.upsert(email, otp_code)
 
-            # Send OTP email via OTPService
-            sent = self.otp_service.send(email, username, otp_code)
+            sent = otp_service.send(email, username, otp_code)
             if not sent:
                 raise Exception("Failed to send verification email")
 
-            self.user_repo.save()
+            user_repo.save()
             return jsonify({
                 "success": True,
                 "message": "Verification code sent to your email",
             }), 201
 
         except Exception as e:
-            self.user_repo.rollback()
+            user_repo.rollback()
             return jsonify({"success": False, "message": str(e)}), 500
 
     # ----------------------------------------------------------
     # VERIFY EMAIL
     # ----------------------------------------------------------
     def verify_email(self):
+        user_repo, otp_repo, _, _, _ = self._get_deps()
+
         data      = request.get_json()
         email     = data.get("email", "").lower().strip()
         user_code = data.get("code", "").strip()
 
-        record = self.otp_repo.find_by_email_and_code(email, user_code)
+        record = otp_repo.find_by_email_and_code(email, user_code)
         if not record:
             return jsonify({"success": False, "message": "Invalid verification code"}), 400
 
         if record.is_expired():
             return jsonify({"success": False, "message": "Code has expired"}), 400
 
-        user = self.user_repo.find_by_email(email)
+        user = user_repo.find_by_email(email)
         if not user:
             return jsonify({"success": False, "message": "User not found"}), 404
 
         user.mark_verified()
-        self.otp_repo.delete(record)
-        self.user_repo.save()
+        otp_repo.delete(record)
+        user_repo.save()
 
         return jsonify({"success": True, "message": "Email verified successfully!"}), 200
 
     # ----------------------------------------------------------
     # LOGIN
-    # Enforces source-based access control:
-    #   mobile → only clients allowed
-    #   web    → only admins allowed
     # ----------------------------------------------------------
     def login(self):
+        user_repo, _, _, _, password_service = self._get_deps()
+
         data     = request.get_json()
         email    = data.get("email", "").lower().strip()
         password = data.get("password", "")
 
-        user = self.user_repo.find_by_email(email)
+        user = user_repo.find_by_email(email)
 
-        # Verify password via PasswordService
-        if not user or not self.password_service.verify(password, user.password):
+        if not user or not password_service.verify(password, user.password):
             return jsonify({"success": False, "message": "Invalid email or password"}), 401
 
-        # Check source matches role — blocks cross-app login attempts
         if not self._is_authorized_source(user):
             return jsonify({
                 "success": False,
                 "message": "Access denied for this platform",
             }), 403
 
-        # Check email verification
         if not user.is_verified():
             return jsonify({
                 "success": False,
                 "message": "Please verify your email first",
             }), 403
 
-        # Serialize response — role included so frontend can use it
         return jsonify({"success": True, **user.to_dict()}), 200
 
     # ----------------------------------------------------------
     # RESEND OTP
     # ----------------------------------------------------------
     def resend_otp(self):
+        user_repo, otp_repo, otp_service, _, _ = self._get_deps()
+
         data  = request.get_json()
         email = data.get("email", "").lower().strip()
 
-        user = self.user_repo.find_by_email(email)
+        user = user_repo.find_by_email(email)
         if not user:
             return jsonify({"success": False, "message": "Email not registered"}), 404
 
@@ -178,23 +181,25 @@ class AuthController:
             return jsonify({"success": False, "message": "Email is already verified"}), 400
 
         try:
-            otp_code = self.otp_service.generate()
-            self.otp_repo.upsert(email, otp_code)
+            otp_code = otp_service.generate()
+            otp_repo.upsert(email, otp_code)
 
-            sent = self.otp_service.send(email, user.username, otp_code)
+            sent = otp_service.send(email, user.username, otp_code)
             if not sent:
                 raise Exception("Failed to send verification email")
 
-            self.user_repo.save()
+            user_repo.save()
             return jsonify({"success": True, "message": "New verification code sent"}), 200
 
         except Exception as e:
-            self.user_repo.rollback()
+            user_repo.rollback()
             return jsonify({"success": False, "message": str(e)}), 500
 
 
 # =============================================================
 # ROUTE REGISTRATION
+# One controller instance — methods are bound per request so
+# each call gets fresh dependencies inside the app context
 # =============================================================
 _controller = AuthController()
 
