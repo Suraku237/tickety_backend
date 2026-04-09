@@ -24,7 +24,7 @@ jobs:
           script: |
             echo "🚀 Starting deployment..."
 
-            cd /home/tickety_backend
+            cd /root/tickety_backend
 
             echo "📥 Pulling latest code..."
             git pull origin main
