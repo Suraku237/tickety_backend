@@ -27,9 +27,9 @@ class OTPService:
         sender_email = current_app.config.get("MAIL_DEFAULT_SENDER")
 
         payload = {
-            "sender": {"email": sender_email, "name": "QLINE"},
+            "sender": {"email": sender_email, "name": "TICKETY"},
             "to": [{"email": email}],
-            "subject": "Your QLINE Verification Code",
+            "subject": "Your TICKETY Verification Code",
             "htmlContent": self._build_email_html(username, otp_code),
         }
 
@@ -64,7 +64,7 @@ class OTPService:
                             🎟
                         </div>
                         <span style="font-size:20px; font-weight:900;
-                                     letter-spacing:4px;">QLINE</span>
+                                     letter-spacing:4px;">TICKETY</span>
                     </div>
                     <h2 style="margin:0 0 8px; font-size:24px;">
                         Welcome, {username}!
@@ -82,7 +82,7 @@ class OTPService:
                     </div>
                     <p style="color:#444; font-size:12px; margin-top:24px;
                               text-align:center;">
-                        If you did not create a QLINE account, ignore this email.
+                        If you did not create a TICKETY account, ignore this email.
                     </p>
                 </div>
             </body>
