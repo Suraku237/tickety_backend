@@ -27,7 +27,7 @@ class OTPService:
         sender_email = current_app.config.get("MAIL_DEFAULT_SENDER")
 
         payload = {
-            "sender": {"email": sender_email, "name": "TICKETY"},
+            "sender": {"email": sender_email, "name": "TICKETYYY"},
             "to": [{"email": email}],
             "subject": "Your TICKETY Verification Code",
             "htmlContent": self._build_email_html(username, otp_code),
