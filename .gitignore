@@ -1,0 +1,9 @@
+# Environment variables
+.env
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Local databases (if any)
+*.db
