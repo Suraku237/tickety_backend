@@ -22,6 +22,10 @@ class User(db.Model):
     verified   = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
+    # Relationships
+    owned_services = db.relationship('Service', backref='owner', lazy=True)
+    admin_entries  = db.relationship('Admin',   backref='user',  lazy=True)
+
     def mark_verified(self):
         """Mark this user's email as verified."""
         self.verified = True
@@ -77,3 +81,79 @@ class ResetCode(db.Model):
 
     def __repr__(self):
         return f"<ResetCode email={self.email} expires={self.expire_at}>"
+
+
+# =============================================================
+# SERVICE MODEL
+# Responsibilities:
+#   - Store the enterprise / business created by a boss admin
+#   - Link back to the User who owns it
+# OOP Principle: Encapsulation, Single Responsibility
+# =============================================================
+class Service(db.Model):
+    __tablename__ = 'services'
+
+    id         = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    name       = db.Column(db.String(120), nullable=False)
+    owner_id   = db.Column(db.Integer, db.ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    admin_entries = db.relationship('Admin', backref='service', lazy=True, cascade='all, delete-orphan')
+
+    def to_dict(self):
+        """Serialize service data for API responses."""
+        return {
+            "service_id":   str(self.id),
+            "service_name": self.name,
+            "owner_id":     str(self.owner_id),
+        }
+
+    def __repr__(self):
+        return f"<Service id={self.id} name={self.name} owner_id={self.owner_id}>"
+
+
+# =============================================================
+# ADMIN MODEL
+# Responsibilities:
+#   - Link a User to a Service with a specific admin role
+#   - admin_role: 'boss' | 'manager' | 'agent'
+# OOP Principle: Encapsulation, Single Responsibility
+# =============================================================
+class Admin(db.Model):
+    __tablename__ = 'admins'
+
+    id         = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    user_id    = db.Column(db.Integer, db.ForeignKey('users.id',    ondelete='CASCADE'), nullable=False)
+    service_id = db.Column(db.Integer, db.ForeignKey('services.id', ondelete='CASCADE'), nullable=False)
+    admin_role = db.Column(db.String(20), nullable=False, default='agent')  # 'boss' | 'manager' | 'agent'
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    # Unique constraint: one role per user per service
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'service_id', name='uq_user_service'),
+    )
+
+    def is_boss(self):
+        """Return True if this admin is the service owner."""
+        return self.admin_role == 'boss'
+
+    def is_manager(self):
+        """Return True if this admin is a ticket manager."""
+        return self.admin_role == 'manager'
+
+    def is_agent(self):
+        """Return True if this admin is a counter agent."""
+        return self.admin_role == 'agent'
+
+    def to_dict(self):
+        """Serialize admin entry for API responses."""
+        return {
+            "admin_id":    str(self.id),
+            "user_id":     str(self.user_id),
+            "service_id":  str(self.service_id),
+            "admin_role":  self.admin_role,
+        }
+
+    def __repr__(self):
+        return f"<Admin user_id={self.user_id} service_id={self.service_id} role={self.admin_role}>"
