@@ -7,19 +7,19 @@ db = SQLAlchemy()
 # =============================================================
 # USER MODEL
 # Responsibilities:
-#   - Store user credentials, profile data and role
-#   - Provide instance-level methods for state changes
+#   - Store verified user credentials, profile data and role
+#   - ONLY created AFTER email verification succeeds
 # OOP Principle: Encapsulation, Single Responsibility
 # =============================================================
 class User(db.Model):
     __tablename__ = 'users'
 
     id         = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    username   = db.Column(db.String(50), unique=True, nullable=False)
-    email      = db.Column(db.String(120), unique=True, nullable=False)
-    password   = db.Column(db.LargeBinary, nullable=False)  # bcrypt bytes
-    role       = db.Column(db.String(20), nullable=False, default='client')  # 'client' | 'admin'
-    verified   = db.Column(db.Boolean, default=False)
+    username   = db.Column(db.String(50),    unique=True, nullable=False)
+    email      = db.Column(db.String(120),   unique=True, nullable=False)
+    password   = db.Column(db.LargeBinary,   nullable=False)   # bcrypt bytes
+    role       = db.Column(db.String(20),    nullable=False, default='client')
+    verified   = db.Column(db.Boolean,       default=False)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
     # Relationships
@@ -52,29 +52,96 @@ class User(db.Model):
         }
 
     def __repr__(self):
-        return f"<User id={self.id} username={self.username} role={self.role} verified={self.verified}>"
+        return f"<User id={self.id} username={self.username} role={self.role}>"
+
+
+# =============================================================
+# PENDING REGISTRATION MODEL
+# Responsibilities:
+#   - Temporarily hold registration data BEFORE email is verified
+#   - Stores hashed password so it is never transmitted twice
+#   - Deleted immediately after successful verification
+#   - Expired rows can be cleaned up by a scheduled job later
+#
+# OOP Principle: Encapsulation, Single Responsibility
+#
+# WHY THIS EXISTS:
+#   Without this model, a connection error after User creation but
+#   before OTP delivery leaves an unverified ghost User in the DB.
+#   The user cannot re-register (email already taken) and never
+#   received the code — they are permanently locked out.
+#
+#   With this model:
+#     - register()      → creates PendingRegistration + sends OTP
+#     - verify_email()  → on success, creates real User + deletes pending row
+#     - resend_otp()    → updates the pending row's code + resends
+#   A failed or interrupted registration leaves only a pending row,
+#   which expires naturally. The user can restart the flow freely.
+# =============================================================
+class PendingRegistration(db.Model):
+    __tablename__ = 'pending_registrations'
+
+    id              = db.Column(db.Integer,     primary_key=True, autoincrement=True)
+    username        = db.Column(db.String(50),  nullable=False)
+    email           = db.Column(db.String(120), unique=True, nullable=False)
+    hashed_password = db.Column(db.LargeBinary, nullable=False)
+    role            = db.Column(db.String(20),  nullable=False, default='client')
+    code            = db.Column(db.String(6),   nullable=False)
+    expire_at       = db.Column(db.DateTime,    nullable=False)
+    created_at      = db.Column(
+        db.DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+
+    def is_expired(self) -> bool:
+        """Return True if this OTP code has passed its expiry time."""
+        return self.expire_at.replace(tzinfo=timezone.utc) <= datetime.now(timezone.utc)
+
+    def update_code(self, new_code: str, new_expiry: datetime):
+        """Replace the OTP with a fresh code and expiry (used by resend)."""
+        self.code      = new_code
+        self.expire_at = new_expiry
+
+    def to_user_payload(self) -> dict:
+        """
+        Return the fields needed to create a real User row.
+        Called by AuthController.verify_email() after code is confirmed.
+        """
+        return {
+            "username":        self.username,
+            "email":           self.email,
+            "hashed_password": self.hashed_password,
+            "role":            self.role,
+        }
+
+    def __repr__(self):
+        return (
+            f"<PendingRegistration email={self.email} "
+            f"role={self.role} expires={self.expire_at}>"
+        )
 
 
 # =============================================================
 # RESET CODE MODEL
 # Responsibilities:
-#   - Store and validate OTP expiry
-#   - Provide expiry check as an instance method
+#   - Store OTP for password reset flows (existing / future feature)
+#   - Intentionally kept separate from PendingRegistration:
+#       ResetCode   → applies to EXISTING verified users
+#       PendingRegistration → applies to UNVERIFIED newcomers
 # OOP Principle: Encapsulation, Single Responsibility
 # =============================================================
 class ResetCode(db.Model):
     __tablename__ = 'resets'
 
-    id        = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    id        = db.Column(db.Integer,     primary_key=True, autoincrement=True)
     email     = db.Column(db.String(120), unique=True, nullable=False)
-    code      = db.Column(db.String(6), nullable=False)
-    expire_at = db.Column(db.DateTime, nullable=False)
+    code      = db.Column(db.String(6),   nullable=False)
+    expire_at = db.Column(db.DateTime,    nullable=False)
 
-    def is_expired(self):
+    def is_expired(self) -> bool:
         """Return True if this OTP code has passed its expiry time."""
         return self.expire_at.replace(tzinfo=timezone.utc) <= datetime.now(timezone.utc)
 
-    def update_code(self, new_code, new_expiry):
+    def update_code(self, new_code: str, new_expiry: datetime):
         """Replace the existing OTP with a fresh code and expiry."""
         self.code      = new_code
         self.expire_at = new_expiry
@@ -87,22 +154,25 @@ class ResetCode(db.Model):
 # SERVICE MODEL
 # Responsibilities:
 #   - Store the enterprise / business created by a boss admin
-#   - Link back to the User who owns it
 # OOP Principle: Encapsulation, Single Responsibility
 # =============================================================
 class Service(db.Model):
     __tablename__ = 'services'
 
-    id         = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    id         = db.Column(db.Integer,     primary_key=True, autoincrement=True)
     name       = db.Column(db.String(120), nullable=False)
-    owner_id   = db.Column(db.Integer, db.ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    owner_id   = db.Column(
+        db.Integer,
+        db.ForeignKey('users.id', ondelete='CASCADE'),
+        nullable=False,
+    )
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
-    # Relationships
-    admin_entries = db.relationship('Admin', backref='service', lazy=True, cascade='all, delete-orphan')
+    admin_entries = db.relationship(
+        'Admin', backref='service', lazy=True, cascade='all, delete-orphan'
+    )
 
     def to_dict(self):
-        """Serialize service data for API responses."""
         return {
             "service_id":   str(self.id),
             "service_name": self.name,
@@ -124,36 +194,37 @@ class Admin(db.Model):
     __tablename__ = 'admins'
 
     id         = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    user_id    = db.Column(db.Integer, db.ForeignKey('users.id',    ondelete='CASCADE'), nullable=False)
-    service_id = db.Column(db.Integer, db.ForeignKey('services.id', ondelete='CASCADE'), nullable=False)
-    admin_role = db.Column(db.String(20), nullable=False, default='agent')  # 'boss' | 'manager' | 'agent'
+    user_id    = db.Column(
+        db.Integer,
+        db.ForeignKey('users.id',    ondelete='CASCADE'),
+        nullable=False,
+    )
+    service_id = db.Column(
+        db.Integer,
+        db.ForeignKey('services.id', ondelete='CASCADE'),
+        nullable=False,
+    )
+    admin_role = db.Column(db.String(20), nullable=False, default='agent')
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
-    # Unique constraint: one role per user per service
     __table_args__ = (
         db.UniqueConstraint('user_id', 'service_id', name='uq_user_service'),
     )
 
-    def is_boss(self):
-        """Return True if this admin is the service owner."""
-        return self.admin_role == 'boss'
-
-    def is_manager(self):
-        """Return True if this admin is a ticket manager."""
-        return self.admin_role == 'manager'
-
-    def is_agent(self):
-        """Return True if this admin is a counter agent."""
-        return self.admin_role == 'agent'
+    def is_boss(self):    return self.admin_role == 'boss'
+    def is_manager(self): return self.admin_role == 'manager'
+    def is_agent(self):   return self.admin_role == 'agent'
 
     def to_dict(self):
-        """Serialize admin entry for API responses."""
         return {
-            "admin_id":    str(self.id),
-            "user_id":     str(self.user_id),
-            "service_id":  str(self.service_id),
-            "admin_role":  self.admin_role,
+            "admin_id":   str(self.id),
+            "user_id":    str(self.user_id),
+            "service_id": str(self.service_id),
+            "admin_role": self.admin_role,
         }
 
     def __repr__(self):
-        return f"<Admin user_id={self.user_id} service_id={self.service_id} role={self.admin_role}>"
+        return (
+            f"<Admin user_id={self.user_id} "
+            f"service_id={self.service_id} role={self.admin_role}>"
+        )

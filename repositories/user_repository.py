@@ -7,6 +7,14 @@ from models import db, User
 #   - Abstract all database operations related to User
 #   - Provide clean query methods consumed by AuthController
 # OOP Principle: Single Responsibility, Encapsulation
+#
+# NOTE ON create():
+#   The signature now accepts hashed_password (bytes) directly
+#   instead of a raw password string. The hashing happens in
+#   AuthController (via PasswordService) before Phase 1
+#   (register), so the same hash can be reused in Phase 2
+#   (verify_email) without ever re-hashing or storing the
+#   plain password anywhere between the two phases.
 # =============================================================
 class UserRepository:
 
@@ -22,18 +30,28 @@ class UserRepository:
         """Return all users matching the given role ('client' or 'admin')."""
         return User.query.filter_by(role=role).all()
 
-    def create(self, username: str, email: str, hashed_password: bytes, role: str) -> User:
+    def create(
+        self,
+        username:        str,
+        email:           str,
+        hashed_password: bytes,
+        role:            str,
+    ) -> User:
         """
-        Instantiate a new User with the resolved role and stage for insertion.
-        Role is passed from AuthController — never from user input.
+        Instantiate a new User and stage it for insertion.
+
+        Accepts hashed_password (bytes from bcrypt) directly —
+        the caller (AuthController.verify_email) pulls this from
+        the PendingRegistration row, which stored it during Phase 1.
+
         Does NOT commit — caller controls the transaction.
         """
         user = User(
-            username=username,
-            email=email,
-            password=hashed_password,
-            role=role,
-            verified=False,
+            username = username,
+            email    = email,
+            password = hashed_password,
+            role     = role,
+            verified = False,   # caller calls user.mark_verified() after create()
         )
         db.session.add(user)
         return user
