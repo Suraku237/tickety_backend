@@ -4,6 +4,7 @@ from repositories.otp_repository import OTPRepository
 from services.otp_service import OTPService
 from utils.validator import Validator
 from utils.password_service import PasswordService
+from utils.jwt_service import JWTService
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -162,7 +163,11 @@ class AuthController:
                 "message": "Please verify your email first",
             }), 403
 
-        return jsonify({"success": True, **user.to_dict()}), 200
+        token = JWTService.generate(user.id, user.email, user.role)
+        user_data = user.to_dict()
+        user_data['token'] = token
+
+        return jsonify({"success": True, **user_data}), 200
 
     # ----------------------------------------------------------
     # RESEND OTP
