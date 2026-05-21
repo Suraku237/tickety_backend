@@ -35,7 +35,10 @@ def create_app() -> Flask:
 
     # --- Extensions ---
     db.init_app(app)
-    CORS(app, supports_credentials=True)
+
+    # --- CORS Configuration ---
+    cors_origins = os.getenv('CORS_ORIGINS', 'http://localhost:3000,http://localhost:5173').split(',')
+    CORS(app, origins=cors_origins, supports_credentials=True)
 
     # --- Blueprints ---
     app.register_blueprint(auth_bp,     url_prefix='/api')
