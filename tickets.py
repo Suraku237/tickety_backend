@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify
 from repositories.ticket_repository  import TicketRepository
 from repositories.service_repository import ServiceRepository
 from models import User
+from utils.logger import log_operation, log_error
 
 tickets_bp = Blueprint('tickets', __name__)
 
@@ -54,24 +55,29 @@ class TicketController:
 
         # Validate required fields
         if not user_id:
+            log_error('VALIDATION', 'tickets', 'user_id is required')
             return jsonify({'success': False,
                             'message': 'user_id is required'}), 400
         if not title:
+            log_error('VALIDATION', 'tickets', 'title is required', user_id=user_id)
             return jsonify({'success': False,
                             'message': 'title is required'}), 400
         if not description:
+            log_error('VALIDATION', 'tickets', 'description is required', user_id=user_id)
             return jsonify({'success': False,
                             'message': 'description is required'}), 400
 
         try:
             uid = int(user_id)
         except ValueError:
+            log_error('VALIDATION', 'tickets', f'Invalid user_id: {user_id}')
             return jsonify({'success': False,
                             'message': 'Invalid user_id'}), 400
 
         # Verify user exists
         user = User.query.get(uid)
         if not user:
+            log_error('DATABASE', 'tickets', 'User not found', user_id=user_id)
             return jsonify({'success': False,
                             'message': 'User not found'}), 404
 
@@ -94,6 +100,7 @@ class TicketController:
                     resolved_name       = resolved_service.name
 
         if not resolved_name:
+            log_error('VALIDATION', 'tickets', 'Could not resolve service from QR code', user_id=user_id)
             return jsonify({'success': False,
                             'message': 'Could not resolve service from QR code'}), 400
 
@@ -109,6 +116,9 @@ class TicketController:
                 service_id   = resolved_service_id,
             )
             ticket_repo.save()
+            log_operation('CREATE', 'tickets',
+                         {'ticket_id': ticket.id, 'title': title, 'service': resolved_name, 'priority': 'medium'},
+                         user_id=uid, success=True)
             return jsonify({
                 'success': True,
                 'message': 'Ticket created successfully',
@@ -117,6 +127,7 @@ class TicketController:
 
         except Exception as e:
             ticket_repo.rollback()
+            log_error('EXCEPTION', 'tickets', str(e), user_id=user_id, exception=e)
             return jsonify({'success': False, 'message': str(e)}), 500
 
     def _extract_token(self, service_code: str) -> str | None:
@@ -152,11 +163,13 @@ class TicketController:
         priority = request.args.get('priority','').strip().lower() or None
 
         if not user_id:
+            log_error('VALIDATION', 'tickets', 'user_id is required')
             return jsonify({'success': False,
                             'message': 'user_id is required'}), 400
         try:
             uid = int(user_id)
         except ValueError:
+            log_error('VALIDATION', 'tickets', f'Invalid user_id: {user_id}')
             return jsonify({'success': False,
                             'message': 'Invalid user_id'}), 400
 
@@ -168,12 +181,17 @@ class TicketController:
             else:
                 tickets = ticket_repo.find_all_by_user(uid)
 
+            log_operation('READ', 'tickets',
+                         {'user_id': uid, 'filters': f'status={status}' if status else f'priority={priority}' if priority else 'none',
+                          'count': len(tickets)},
+                         user_id=uid, success=True)
             return jsonify({
                 'success': True,
                 'tickets': [t.to_dict() for t in tickets],
                 'count':   len(tickets),
             }), 200
         except Exception as e:
+            log_error('EXCEPTION', 'tickets', str(e), user_id=user_id, exception=e)
             return jsonify({'success': False, 'message': str(e)}), 500
 
     # ----------------------------------------------------------
@@ -181,6 +199,7 @@ class TicketController:
     # ----------------------------------------------------------
     def list_all(self):
         if not self._is_admin():
+            log_error('AUTH', 'tickets', 'Admin access required')
             return jsonify({'success': False,
                             'message': 'Admin access required'}), 403
         ticket_repo, _ = self._get_deps()
@@ -195,12 +214,17 @@ class TicketController:
             else:
                 tickets = ticket_repo.find_all()
 
+            log_operation('READ', 'tickets',
+                         {'filters': f'service_id={service_id}' if service_id else f'status={status}' if status else 'all',
+                          'count': len(tickets)},
+                         success=True)
             return jsonify({
                 'success': True,
                 'tickets': [t.to_dict() for t in tickets],
                 'count':   len(tickets),
             }), 200
         except Exception as e:
+            log_error('EXCEPTION', 'tickets', str(e), exception=e)
             return jsonify({'success': False, 'message': str(e)}), 500
 
     # ----------------------------------------------------------
@@ -212,14 +236,17 @@ class TicketController:
         ticket  = ticket_repo.find_by_id(ticket_id)
 
         if not ticket:
+            log_error('DATABASE', 'tickets', f'Ticket not found: {ticket_id}')
             return jsonify({'success': False,
                             'message': 'Ticket not found'}), 404
 
         # Admin can see any ticket; client only sees their own
         if not self._is_admin() and str(ticket.user_id) != user_id:
+            log_error('AUTH', 'tickets', f'Access denied to ticket {ticket_id}', user_id=user_id)
             return jsonify({'success': False,
                             'message': 'Access denied'}), 403
 
+        log_operation('READ', 'tickets', {'ticket_id': ticket_id, 'title': ticket.title}, user_id=user_id or ticket.user_id, success=True)
         return jsonify({'success': True, 'ticket': ticket.to_dict()}), 200
 
     # ----------------------------------------------------------
@@ -234,15 +261,30 @@ class TicketController:
         ticket  = ticket_repo.find_by_id(ticket_id)
 
         if not ticket:
+            log_error('DATABASE', 'tickets', f'Ticket not found: {ticket_id}', user_id=user_id)
             return jsonify({'success': False,
                             'message': 'Ticket not found'}), 404
 
         is_admin = self._is_admin()
         if not is_admin and str(ticket.user_id) != user_id:
+            log_error('AUTH', 'tickets', f'Access denied to update ticket {ticket_id}', user_id=user_id)
             return jsonify({'success': False,
                             'message': 'Access denied'}), 403
 
         try:
+            changes = {}
+            if data.get('title'):
+                changes['title'] = data.get('title')
+            if data.get('description'):
+                changes['description'] = data.get('description')
+            if data.get('notes'):
+                changes['notes'] = data.get('notes')
+            if is_admin:
+                if data.get('priority'):
+                    changes['priority'] = data.get('priority')
+                if data.get('status'):
+                    changes['status'] = data.get('status')
+
             ticket_repo.update_fields(
                 ticket,
                 title       = data.get('title'),
@@ -253,15 +295,19 @@ class TicketController:
                 status      = data.get('status')   if is_admin else None,
             )
             ticket_repo.save()
+            log_operation('UPDATE', 'tickets', {'ticket_id': ticket_id, 'changes': len(changes), **changes},
+                         user_id=user_id or ticket.user_id, success=True)
             return jsonify({
                 'success': True,
                 'message': 'Ticket updated',
                 'ticket':  ticket.to_dict(),
             }), 200
         except ValueError as e:
+            log_error('VALIDATION', 'tickets', str(e), user_id=user_id or ticket.user_id)
             return jsonify({'success': False, 'message': str(e)}), 400
         except Exception as e:
             ticket_repo.rollback()
+            log_error('EXCEPTION', 'tickets', str(e), user_id=user_id or ticket.user_id, exception=e)
             return jsonify({'success': False, 'message': str(e)}), 500
 
     # ----------------------------------------------------------
@@ -274,20 +320,25 @@ class TicketController:
         ticket  = ticket_repo.find_by_id(ticket_id)
 
         if not ticket:
+            log_error('DATABASE', 'tickets', f'Ticket not found: {ticket_id}', user_id=user_id)
             return jsonify({'success': False,
                             'message': 'Ticket not found'}), 404
 
         if not self._is_admin() and str(ticket.user_id) != user_id:
+            log_error('AUTH', 'tickets', f'Access denied to delete ticket {ticket_id}', user_id=user_id)
             return jsonify({'success': False,
                             'message': 'Access denied'}), 403
 
         try:
+            log_operation('DELETE', 'tickets', {'ticket_id': ticket_id, 'title': ticket.title},
+                         user_id=user_id or ticket.user_id, success=True)
             ticket_repo.delete(ticket)
             ticket_repo.save()
             return jsonify({'success': True,
                             'message': 'Ticket deleted'}), 200
         except Exception as e:
             ticket_repo.rollback()
+            log_error('EXCEPTION', 'tickets', str(e), user_id=user_id or ticket.user_id, exception=e)
             return jsonify({'success': False, 'message': str(e)}), 500
 
 

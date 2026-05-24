@@ -6,6 +6,7 @@ from auth    import auth_bp
 from tickets import tickets_bp
 from services_bp import services_bp
 from dotenv  import load_dotenv
+from utils.logger import setup_logger, log_request_info, log_response_info, logger
 
 load_dotenv()
 
@@ -44,6 +45,15 @@ def create_app() -> Flask:
     app.register_blueprint(auth_bp,     url_prefix='/api')
     app.register_blueprint(tickets_bp,  url_prefix='/api')
     app.register_blueprint(services_bp, url_prefix='/api')  # ← NEW
+
+    # --- Request/Response Logging ---
+    @app.before_request
+    def before_request():
+        log_request_info()
+
+    @app.after_request
+    def after_request(response):
+        return log_response_info(response)
 
     # --- Health check ---
     @app.route('/')

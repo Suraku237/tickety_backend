@@ -5,6 +5,7 @@ import base64
 from repositories.service_repository import ServiceRepository
 from repositories.user_repository    import UserRepository
 from services.qr_service             import QRService
+from utils.logger import log_operation, log_error
 
 services_bp = Blueprint('services', __name__)
 
@@ -48,6 +49,7 @@ class ServicesController:
     # ----------------------------------------------------------
     def create(self):
         if not self._require_admin():
+            log_error('AUTH', 'services', 'Admin access required')
             return jsonify({'success': False,
                             'message': 'Admin access required'}), 403
 
@@ -60,9 +62,11 @@ class ServicesController:
         admin_id    = data.get('admin_id')
 
         if not name:
+            log_error('VALIDATION', 'services', 'Service name is required')
             return jsonify({'success': False,
                             'message': 'Service name is required'}), 400
         if not admin_id:
+            log_error('VALIDATION', 'services', 'admin_id is required', user_id=admin_id)
             return jsonify({'success': False,
                             'message': 'admin_id is required'}), 400
 
@@ -88,6 +92,8 @@ class ServicesController:
             )
             svc_repo.save()
 
+            log_operation('CREATE', 'services', {'service_id': service.id, 'name': name, 'category': category},
+                         user_id=admin_id, success=True)
             return jsonify({
                 'success': True,
                 'message': 'Service created with QR code',
@@ -96,6 +102,7 @@ class ServicesController:
 
         except Exception as e:
             svc_repo.rollback()
+            log_error('EXCEPTION', 'services', str(e), user_id=admin_id, exception=e)
             return jsonify({'success': False, 'message': str(e)}), 500
 
     # ----------------------------------------------------------
@@ -109,12 +116,16 @@ class ServicesController:
         try:
             services = svc_repo.find_all() if is_admin \
                 else svc_repo.find_active()
+            log_operation('READ', 'services',
+                         {'filter': 'all' if is_admin else 'active', 'count': len(services)},
+                         success=True)
             return jsonify({
                 'success':  True,
                 'services': [s.to_dict() for s in services],
                 'count':    len(services),
             }), 200
         except Exception as e:
+            log_error('EXCEPTION', 'services', str(e), exception=e)
             return jsonify({'success': False, 'message': str(e)}), 500
 
     # ----------------------------------------------------------
@@ -124,8 +135,10 @@ class ServicesController:
         svc_repo, _, _ = self._get_deps()
         service = svc_repo.find_by_id(service_id)
         if not service:
+            log_error('DATABASE', 'services', f'Service not found: {service_id}')
             return jsonify({'success': False,
                             'message': 'Service not found'}), 404
+        log_operation('READ', 'services', {'service_id': service_id, 'name': service.name}, success=True)
         return jsonify({'success': True, 'service': service.to_dict()}), 200
 
     # ----------------------------------------------------------
@@ -134,17 +147,29 @@ class ServicesController:
     # ----------------------------------------------------------
     def update_service(self, service_id: int):
         if not self._require_admin():
+            log_error('AUTH', 'services', f'Admin access required to update service {service_id}')
             return jsonify({'success': False,
                             'message': 'Admin access required'}), 403
 
         svc_repo, _, _ = self._get_deps()
         service = svc_repo.find_by_id(service_id)
         if not service:
+            log_error('DATABASE', 'services', f'Service not found: {service_id}')
             return jsonify({'success': False,
                             'message': 'Service not found'}), 404
 
         data = request.get_json(silent=True) or {}
         try:
+            changes = {}
+            if data.get('name'):
+                changes['name'] = data.get('name')
+            if data.get('description'):
+                changes['description'] = data.get('description')
+            if data.get('category'):
+                changes['category'] = data.get('category')
+            if 'is_active' in data:
+                changes['is_active'] = data.get('is_active')
+
             svc_repo.update(
                 service,
                 name        = data.get('name'),
@@ -153,6 +178,7 @@ class ServicesController:
                 is_active   = data.get('is_active'),
             )
             svc_repo.save()
+            log_operation('UPDATE', 'services', {'service_id': service_id, 'changes': len(changes), **changes}, success=True)
             return jsonify({
                 'success': True,
                 'message': 'Service updated',
@@ -160,6 +186,7 @@ class ServicesController:
             }), 200
         except Exception as e:
             svc_repo.rollback()
+            log_error('EXCEPTION', 'services', str(e), exception=e)
             return jsonify({'success': False, 'message': str(e)}), 500
 
     # ----------------------------------------------------------
@@ -167,22 +194,26 @@ class ServicesController:
     # ----------------------------------------------------------
     def delete_service(self, service_id: int):
         if not self._require_admin():
+            log_error('AUTH', 'services', f'Admin access required to delete service {service_id}')
             return jsonify({'success': False,
                             'message': 'Admin access required'}), 403
 
         svc_repo, _, _ = self._get_deps()
         service = svc_repo.find_by_id(service_id)
         if not service:
+            log_error('DATABASE', 'services', f'Service not found: {service_id}')
             return jsonify({'success': False,
                             'message': 'Service not found'}), 404
 
         try:
+            log_operation('DELETE', 'services', {'service_id': service_id, 'name': service.name}, success=True)
             svc_repo.delete(service)
             svc_repo.save()
             return jsonify({'success': True,
                             'message': 'Service deleted'}), 200
         except Exception as e:
             svc_repo.rollback()
+            log_error('EXCEPTION', 'services', str(e), exception=e)
             return jsonify({'success': False, 'message': str(e)}), 500
 
     # ----------------------------------------------------------
@@ -193,18 +224,21 @@ class ServicesController:
     # ----------------------------------------------------------
     def regenerate_qr(self, service_id: int):
         if not self._require_admin():
+            log_error('AUTH', 'services', f'Admin access required to regenerate QR for service {service_id}')
             return jsonify({'success': False,
                             'message': 'Admin access required'}), 403
 
         svc_repo, _, qr_svc = self._get_deps()
         service = svc_repo.find_by_id(service_id)
         if not service:
+            log_error('DATABASE', 'services', f'Service not found: {service_id}')
             return jsonify({'success': False,
                             'message': 'Service not found'}), 404
 
         try:
             import uuid
             # Issue a new token so old physical QR codes stop working
+            old_token = service.service_token
             service.service_token = str(uuid.uuid4())
 
             encoded_url, image_uri = qr_svc.generate_for_service(
@@ -217,6 +251,8 @@ class ServicesController:
                 svc_repo.create_qr(service_id, encoded_url, image_uri)
 
             svc_repo.save()
+            log_operation('REGENERATE_QR', 'services', {'service_id': service_id, 'name': service.name, 'old_token': old_token[:8] + '...'},
+                         success=True)
             return jsonify({
                 'success': True,
                 'message': 'QR code regenerated',
@@ -224,6 +260,7 @@ class ServicesController:
             }), 200
         except Exception as e:
             svc_repo.rollback()
+            log_error('EXCEPTION', 'services', str(e), exception=e)
             return jsonify({'success': False, 'message': str(e)}), 500
 
     # ----------------------------------------------------------
@@ -234,6 +271,7 @@ class ServicesController:
         svc_repo, _, _ = self._get_deps()
         qr = svc_repo.get_qr(service_id)
         if not qr or not qr.image_url:
+            log_error('DATABASE', 'services', f'QR code not found for service {service_id}')
             return jsonify({'success': False,
                             'message': 'QR code not found'}), 404
 
@@ -243,6 +281,7 @@ class ServicesController:
             png_bytes        = base64.b64decode(b64_data)
             buffer           = BytesIO(png_bytes)
             buffer.seek(0)
+            log_operation('DOWNLOAD_QR', 'services', {'service_id': service_id}, success=True)
             return send_file(
                 buffer,
                 mimetype     = 'image/png',
@@ -250,6 +289,7 @@ class ServicesController:
                 download_name = f'service_{service_id}_qr.png',
             )
         except Exception as e:
+            log_error('EXCEPTION', 'services', str(e), exception=e)
             return jsonify({'success': False, 'message': str(e)}), 500
 
     # ----------------------------------------------------------
@@ -263,18 +303,22 @@ class ServicesController:
         token = request.args.get('token', '').strip()
 
         if not token:
+            log_error('VALIDATION', 'services', 'token is required')
             return jsonify({'success': False,
                             'message': 'token is required'}), 400
 
         service = svc_repo.find_by_token(token)
         if not service:
+            log_error('DATABASE', 'services', f'Invalid or expired QR code: {token[:8]}...')
             return jsonify({'success': False,
                             'message': 'Invalid or expired QR code'}), 404
 
         if not service.is_active:
+            log_error('VALIDATION', 'services', f'Service {service.id} is inactive')
             return jsonify({'success': False,
                             'message': 'This service is currently inactive'}), 403
 
+        log_operation('RESOLVE_QR', 'services', {'service_id': service.id, 'name': service.name}, success=True)
         return jsonify({
             'success': True,
             'service': service.to_dict(),

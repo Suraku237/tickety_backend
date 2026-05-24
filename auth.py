@@ -5,6 +5,7 @@ from services.otp_service import OTPService
 from utils.validator import Validator
 from utils.password_service import PasswordService
 from utils.jwt_service import JWTService
+from utils.logger import log_operation, log_error
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -78,11 +79,14 @@ class AuthController:
 
         error = validator.validate_registration(username, email, password)
         if error:
+            log_error('VALIDATION', 'auth', error, user_id=email)
             return jsonify({"success": False, "message": error}), 400
 
         if user_repo.find_by_email(email):
+            log_error('VALIDATION', 'auth', 'Email already registered', user_id=email)
             return jsonify({"success": False, "message": "Email already registered"}), 400
         if user_repo.find_by_username(username):
+            log_error('VALIDATION', 'auth', 'Username already taken', user_id=username)
             return jsonify({"success": False, "message": "Username already taken"}), 400
 
         try:
@@ -100,6 +104,7 @@ class AuthController:
                 raise Exception("Failed to send verification email")
 
             user_repo.save()
+            log_operation('REGISTER', 'auth', {'email': email, 'username': username, 'role': role}, success=True)
             return jsonify({
                 "success": True,
                 "message": "Verification code sent to your email",
@@ -107,6 +112,7 @@ class AuthController:
 
         except Exception as e:
             user_repo.rollback()
+            log_error('EXCEPTION', 'auth', str(e), user_id=email, exception=e)
             return jsonify({"success": False, "message": str(e)}), 500
 
     # ----------------------------------------------------------
@@ -121,19 +127,23 @@ class AuthController:
 
         record = otp_repo.find_by_email_and_code(email, user_code)
         if not record:
+            log_error('VALIDATION', 'auth', 'Invalid verification code', user_id=email)
             return jsonify({"success": False, "message": "Invalid verification code"}), 400
 
         if record.is_expired():
+            log_error('VALIDATION', 'auth', 'Code has expired', user_id=email)
             return jsonify({"success": False, "message": "Code has expired"}), 400
 
         user = user_repo.find_by_email(email)
         if not user:
+            log_error('DATABASE', 'auth', 'User not found', user_id=email)
             return jsonify({"success": False, "message": "User not found"}), 404
 
         user.mark_verified()
         otp_repo.delete(record)
         user_repo.save()
 
+        log_operation('VERIFY_EMAIL', 'auth', {'email': email, 'user_id': user.id}, user_id=user.id, success=True)
         return jsonify({"success": True, "message": "Email verified successfully!"}), 200
 
     # ----------------------------------------------------------
@@ -149,15 +159,19 @@ class AuthController:
         user = user_repo.find_by_email(email)
 
         if not user or not password_service.verify(password, user.password):
+            log_error('AUTH', 'auth', 'Invalid email or password', user_id=email)
             return jsonify({"success": False, "message": "Invalid email or password"}), 401
 
         if not self._is_authorized_source(user):
+            source = request.headers.get('X-App-Source', 'unknown').lower()
+            log_error('AUTH', 'auth', f'Access denied for platform {source}', user_id=user.id)
             return jsonify({
                 "success": False,
                 "message": "Access denied for this platform",
             }), 403
 
         if not user.is_verified():
+            log_error('AUTH', 'auth', 'Email not verified', user_id=user.id)
             return jsonify({
                 "success": False,
                 "message": "Please verify your email first",
@@ -167,6 +181,7 @@ class AuthController:
         user_data = user.to_dict()
         user_data['token'] = token
 
+        log_operation('LOGIN', 'auth', {'user_id': user.id, 'email': email, 'role': user.role}, user_id=user.id, success=True)
         return jsonify({"success": True, **user_data}), 200
 
     # ----------------------------------------------------------
@@ -180,9 +195,11 @@ class AuthController:
 
         user = user_repo.find_by_email(email)
         if not user:
+            log_error('DATABASE', 'auth', 'Email not registered', user_id=email)
             return jsonify({"success": False, "message": "Email not registered"}), 404
 
         if user.is_verified():
+            log_error('VALIDATION', 'auth', 'Email is already verified', user_id=email)
             return jsonify({"success": False, "message": "Email is already verified"}), 400
 
         try:
@@ -194,10 +211,12 @@ class AuthController:
                 raise Exception("Failed to send verification email")
 
             user_repo.save()
+            log_operation('RESEND_OTP', 'auth', {'email': email, 'user_id': user.id}, user_id=user.id, success=True)
             return jsonify({"success": True, "message": "New verification code sent"}), 200
 
         except Exception as e:
             user_repo.rollback()
+            log_error('EXCEPTION', 'auth', str(e), user_id=email, exception=e)
             return jsonify({"success": False, "message": str(e)}), 500
 
 
