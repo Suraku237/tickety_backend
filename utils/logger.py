@@ -104,7 +104,9 @@ ops_logger = logging.getLogger('operations')
 def log_request_info():
     """Log incoming request information"""
     source = request.headers.get('X-App-Source', 'unknown').lower()
-    user_id = request.args.get('user_id') or request.get_json(silent=True).get('user_id') if request.method != 'GET' else request.args.get('user_id')
+    # Fixed: get_json() returns None for OPTIONS/bodyless requests — guard with or {}
+    body    = request.get_json(silent=True) or {}
+    user_id = request.args.get('user_id') or (body.get('user_id') if request.method != 'GET' else None)
 
     request_info = {
         'method': request.method,
