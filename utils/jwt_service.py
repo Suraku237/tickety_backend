@@ -1,6 +1,6 @@
 import jwt
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # =============================================================
 # JWT SERVICE
@@ -12,7 +12,8 @@ from datetime import datetime, timedelta
 # =============================================================
 class JWTService:
 
-    SECRET = os.getenv('JWT_SECRET', 'dev-secret-key-change-in-production')
+    # Fixed: was 'JWT_SECRET' but .env defines 'JWT_SECRET_KEY'
+    SECRET = os.getenv('JWT_SECRET_KEY', 'dev-secret-key-change-in-production')
     ALGORITHM = 'HS256'
     EXPIRY_DAYS = 30
 
@@ -22,12 +23,14 @@ class JWTService:
         Generate JWT token for authenticated user.
         Token expires after EXPIRY_DAYS.
         """
+        # Fixed: replaced deprecated datetime.utcnow() with timezone-aware now()
+        now = datetime.now(timezone.utc)
         payload = {
             'user_id': str(user_id),
             'email': email,
             'role': role,
-            'exp': datetime.utcnow() + timedelta(days=JWTService.EXPIRY_DAYS),
-            'iat': datetime.utcnow(),
+            'exp': now + timedelta(days=JWTService.EXPIRY_DAYS),
+            'iat': now,
         }
         try:
             token = jwt.encode(payload, JWTService.SECRET, algorithm=JWTService.ALGORITHM)
@@ -53,5 +56,5 @@ class JWTService:
 
     @staticmethod
     def decode(token):
-        """Alias for verify() — decode without validation"""
+        """Alias for verify() — decode without validation."""
         return JWTService.verify(token)

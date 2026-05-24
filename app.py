@@ -105,7 +105,11 @@ if __name__ == '__main__':
             db.create_all()
             print('✅ All tables created / verified.')
         except Exception as e:
-            print(f'❌ Database connection failed: {e}')
+            logger.warning(f'⚠️  Database connection failed: {e}')
+            print(f'⚠️  Database connection failed (app will start but DB operations will fail)')
+            print(f'   Error: {e}')
+            print(f'   → Check your DATABASE_URL in .env')
+            print(f'   → Verify network connectivity to Aiven')
 
     print('🚀 TICKETY server starting on http://localhost:5000 ...')
     app.run(host='0.0.0.0', port=5000, debug=True)

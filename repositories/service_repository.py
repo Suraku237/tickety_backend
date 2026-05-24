@@ -77,10 +77,12 @@ class ServiceRepository:
         is_active:   bool | None = None,
     ) -> Service:
         """Partial update — only overwrites fields that are not None."""
+        from datetime import datetime, timezone
         if name        is not None: service.name        = name
         if description is not None: service.description = description
         if category    is not None: service.category    = category
         if is_active   is not None: service.is_active   = is_active
+        service.updated_at = datetime.now(timezone.utc)  # explicit for SQLite compat
         return service
 
     def delete(self, service: Service):
