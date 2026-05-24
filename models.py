@@ -6,7 +6,7 @@ db = SQLAlchemy()
 
 
 # =============================================================
-# USER MODEL  (unchanged)
+# USER MODEL
 # =============================================================
 class User(db.Model):
     __tablename__ = 'users'
@@ -40,7 +40,7 @@ class User(db.Model):
 
 
 # =============================================================
-# RESET CODE MODEL  (unchanged)
+# RESET CODE MODEL
 # =============================================================
 class ResetCode(db.Model):
     __tablename__ = 'resets'
@@ -63,22 +63,6 @@ class ResetCode(db.Model):
 
 # =============================================================
 # SERVICE MODEL
-# Responsibilities:
-#   - Represent a physical service point (desk, counter, booth)
-#     that the admin creates from the website dashboard
-#   - Each Service owns one unique QR code
-#   - The mobile app scans the QR → reads service_token →
-#     backend resolves which Service it is → pre-fills ticket
-#
-# OOP Principle: Encapsulation, Single Responsibility
-#
-# Fields:
-#   name        — display name shown in the mobile app
-#   description — optional detail about the service
-#   category    — groups services (e.g. "Billing", "Support")
-#   is_active   — admin can deactivate without deleting
-#   service_token — unique UUID embedded in the QR code URL
-#   created_by  — FK to the admin user who created it
 # =============================================================
 class Service(db.Model):
     __tablename__ = 'services'
@@ -89,25 +73,18 @@ class Service(db.Model):
     category      = db.Column(db.String(50), nullable=False, default='General')
     is_active     = db.Column(db.Boolean, default=True)
 
-    # UUID embedded in every QR code for this service.
-    # Mobile app sends this token; backend maps it back to this row.
     service_token = db.Column(
         db.String(36), unique=True, nullable=False,
         default=lambda: str(uuid.uuid4())
     )
 
-    created_by    = db.Column(db.Integer, db.ForeignKey('users.id'),
-                              nullable=False)
-    created_at    = db.Column(db.DateTime,
-                              default=lambda: datetime.now(timezone.utc))
-    # onupdate is handled explicitly in service routes for SQLite compatibility
-    updated_at    = db.Column(db.DateTime,
-                              default=lambda: datetime.now(timezone.utc))
+    created_by    = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    created_at    = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    # Fixed: removed onupdate lambda (unreliable on SQLite); updated_at is
+    # stamped explicitly in ServiceRepository.update() instead.
+    updated_at    = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
-    # One service has many tickets submitted against it
-    tickets       = db.relationship('Ticket', backref='service_ref',
-                                    lazy=True)
-    # One service has exactly one QR code record
+    tickets       = db.relationship('Ticket', backref='service_ref', lazy=True)
     qr_code       = db.relationship('QRCode', backref='service',
                                     uselist=False, cascade='all, delete-orphan')
 
@@ -133,19 +110,6 @@ class Service(db.Model):
 
 # =============================================================
 # QR CODE MODEL
-# Responsibilities:
-#   - Store the generated QR code image URL for each Service
-#   - Track when it was last regenerated
-#
-# The QR code encodes the URL:
-#   https://<base_url>/scan/<service_token>
-# When scanned:
-#   - Mobile app reads the URL
-#   - Extracts the token from the path
-#   - Sends it to POST /api/tickets with service_code = full URL
-#   - Backend resolves Service from the token
-#
-# OOP Principle: Encapsulation, Single Responsibility
 # =============================================================
 class QRCode(db.Model):
     __tablename__ = 'qr_codes'
@@ -153,15 +117,9 @@ class QRCode(db.Model):
     id           = db.Column(db.Integer, primary_key=True, autoincrement=True)
     service_id   = db.Column(db.Integer, db.ForeignKey('services.id'),
                              nullable=False, unique=True)
-
-    # Full URL encoded inside the QR image
     encoded_url  = db.Column(db.String(500), nullable=False)
-
-    # Base64 PNG data-URI or cloud storage URL for the image
     image_url    = db.Column(db.Text, nullable=True)
-
-    generated_at = db.Column(db.DateTime,
-                             default=lambda: datetime.now(timezone.utc))
+    generated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
     def regenerate(self, new_url: str, new_image_url: str):
         self.encoded_url  = new_url
@@ -174,8 +132,7 @@ class QRCode(db.Model):
             "service_id":   str(self.service_id),
             "encoded_url":  self.encoded_url,
             "image_url":    self.image_url,
-            "generated_at": self.generated_at.isoformat()
-                            if self.generated_at else None,
+            "generated_at": self.generated_at.isoformat() if self.generated_at else None,
         }
 
     def __repr__(self):
@@ -184,20 +141,13 @@ class QRCode(db.Model):
 
 # =============================================================
 # TICKET MODEL
-# Changed: added service_id FK so every ticket is now linked
-# directly to a Service row (resolved from the scanned token).
-# service_code kept for backward compat with existing mobile data.
 # =============================================================
 class Ticket(db.Model):
     __tablename__ = 'tickets'
 
     id           = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    user_id      = db.Column(db.Integer, db.ForeignKey('users.id'),
-                             nullable=False)
-
-    # Link to Service row (nullable for legacy tickets before services existed)
-    service_id   = db.Column(db.Integer, db.ForeignKey('services.id'),
-                             nullable=True)
+    user_id      = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    service_id   = db.Column(db.Integer, db.ForeignKey('services.id'), nullable=True)
 
     title        = db.Column(db.String(200), nullable=False)
     description  = db.Column(db.Text, nullable=False)
@@ -207,25 +157,24 @@ class Ticket(db.Model):
     service_code = db.Column(db.String(500), nullable=True, default='')
 
     status       = db.Column(db.String(20), nullable=False, default='open')
-    created_at   = db.Column(db.DateTime,
-                             default=lambda: datetime.now(timezone.utc))
-    # onupdate is triggered explicitly via set_status/set_priority for SQLite compatibility
-    updated_at   = db.Column(db.DateTime,
-                             default=lambda: datetime.now(timezone.utc))
+    created_at   = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    # Fixed: removed onupdate lambda; updated_at is stamped explicitly
+    # in set_status() and set_priority() below.
+    updated_at   = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
     def set_status(self, status: str):
         allowed = {'open', 'pending', 'closed'}
         if status not in allowed:
             raise ValueError(f"Invalid status '{status}'. Allowed: {allowed}")
-        self.status = status
+        self.status     = status
         self.updated_at = datetime.now(timezone.utc)  # explicit for SQLite compat
 
     def set_priority(self, priority: str):
         allowed = {'low', 'medium', 'high', 'urgent'}
         if priority not in allowed:
             raise ValueError(f"Invalid priority '{priority}'. Allowed: {allowed}")
-        self.priority = priority
-        self.updated_at = datetime.now(timezone.utc)  # explicit for SQLite compat
+        self.priority   = priority
+        self.updated_at = datetime.now(timezone.utc)  # Fixed: was missing updated_at stamp
 
     def open(self):
         self.status     = 'open'

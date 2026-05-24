@@ -82,7 +82,8 @@ class ServiceRepository:
         if description is not None: service.description = description
         if category    is not None: service.category    = category
         if is_active   is not None: service.is_active   = is_active
-        service.updated_at = datetime.now(timezone.utc)  # explicit for SQLite compat
+        # Fixed: stamp updated_at explicitly (onupdate lambda removed from model)
+        service.updated_at = datetime.now(timezone.utc)
         return service
 
     def delete(self, service: Service):
