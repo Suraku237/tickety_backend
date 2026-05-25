@@ -2,18 +2,18 @@ import sqlite3
 import hashlib
 import random
 from flask import Flask, request, jsonify
-
+                                
 app = Flask(__name__)
 DATABASE_FILE = 'my_database.db'
 
 # --- DATABASE HELPER FUNCTIONS ---
 
 def get_db_connection():
-    """Connects to the SQLite database and returns the connection."""
-    conn = sqlite3.connect(DATABASE_FILE)
+            """Connects  to the SQLite database and returns the connection."""
+            conn = sqlite3.connect(DATABASE_FILE)
     # This allows us to access columns by name (e.g., user['Email'])
-    conn.row_factory = sqlite3.Row 
-    return conn
+            conn.row_factory = sqlite3.Row 
+            return conn
 
 def init_db():
     """Initializes the database and creates the userdata table if it doesn't exist."""
