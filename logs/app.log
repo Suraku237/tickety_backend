@@ -18,3 +18,13 @@ Traceback (most recent call last):
   File "C:\Users\rayan\Desktop\tickety_backend\auth.py", line 104, in register
     raise Exception("Failed to send verification email")
 Exception: Failed to send verification email
+2026-05-25 22:10:39 | tickety | [31mERROR[0m | [ERROR] EXCEPTION | AUTH | user=babannajunior@gmail.com | Failed to send verification email
+Traceback (most recent call last):
+  File "C:\Users\rayan\Desktop\tickety_backend\auth.py", line 80, in register
+    raise Exception("Failed to send verification email")
+Exception: Failed to send verification email
+2026-05-25 22:12:45 | tickety | [31mERROR[0m | [ERROR] VALIDATION | AUTH | user=babannajunior@gmail.com | Invalid verification code
+2026-05-25 22:12:55 | tickety | [31mERROR[0m | [ERROR] VALIDATION | AUTH | user=babannajunior@gmail.com | Invalid verification code
+2026-05-25 22:13:09 | tickety | [31mERROR[0m | [ERROR] VALIDATION | AUTH | user=babannajunior@gmail.com | Invalid verification code
+2026-05-25 22:13:44 | tickety | [31mERROR[0m | [ERROR] VALIDATION | AUTH | user=babannajunior@gmail.com | Email is already verified
+2026-05-25 22:13:59 | tickety | [31mERROR[0m | [ERROR] VALIDATION | AUTH | user=babannajunior@gmail.com | Email already registered

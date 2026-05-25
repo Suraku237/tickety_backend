@@ -2,3 +2,9 @@
 2026-05-24 11:16:22 | [ERROR] EXCEPTION | AUTH | user=kwetejunior9@gmail.com | Failed to send verification email
 2026-05-24 11:16:30 | [ERROR] EXCEPTION | AUTH | user=kwetejunior9@gmail.com | Failed to send verification email
 2026-05-25 11:19:22 | [ERROR] EXCEPTION | AUTH | user=kwetejunior9@gmail.com | Failed to send verification email
+2026-05-25 22:10:39 | [ERROR] EXCEPTION | AUTH | user=babannajunior@gmail.com | Failed to send verification email
+2026-05-25 22:12:45 | [ERROR] VALIDATION | AUTH | user=babannajunior@gmail.com | Invalid verification code
+2026-05-25 22:12:55 | [ERROR] VALIDATION | AUTH | user=babannajunior@gmail.com | Invalid verification code
+2026-05-25 22:13:09 | [ERROR] VALIDATION | AUTH | user=babannajunior@gmail.com | Invalid verification code
+2026-05-25 22:13:44 | [ERROR] VALIDATION | AUTH | user=babannajunior@gmail.com | Email is already verified
+2026-05-25 22:13:59 | [ERROR] VALIDATION | AUTH | user=babannajunior@gmail.com | Email already registered
