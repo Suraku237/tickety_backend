@@ -1,0 +1,15 @@
+2026-05-24 10:47:46 | tickety | [31mERROR[0m | [ERROR] EXCEPTION | AUTH | user=kwetejunior9@gmail.com | Failed to send verification email
+Traceback (most recent call last):
+  File "C:\Users\rayan\Desktop\tickety_backend\auth.py", line 104, in register
+    raise Exception("Failed to send verification email")
+Exception: Failed to send verification email
+2026-05-24 11:16:22 | tickety | [31mERROR[0m | [ERROR] EXCEPTION | AUTH | user=kwetejunior9@gmail.com | Failed to send verification email
+Traceback (most recent call last):
+  File "C:\Users\rayan\Desktop\tickety_backend\auth.py", line 104, in register
+    raise Exception("Failed to send verification email")
+Exception: Failed to send verification email
+2026-05-24 11:16:30 | tickety | [31mERROR[0m | [ERROR] EXCEPTION | AUTH | user=kwetejunior9@gmail.com | Failed to send verification email
+Traceback (most recent call last):
+  File "C:\Users\rayan\Desktop\tickety_backend\auth.py", line 104, in register
+    raise Exception("Failed to send verification email")
+Exception: Failed to send verification email
