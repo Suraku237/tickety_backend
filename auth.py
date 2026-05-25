@@ -9,7 +9,6 @@ from utils.logger import log_operation, log_error
 
 auth_bp = Blueprint("auth", __name__)
 
-
 # =============================================================
 # AUTH CONTROLLER
 # Responsibilities:
@@ -18,28 +17,14 @@ auth_bp = Blueprint("auth", __name__)
 #   - Enforce source-based access control on login
 #   - Orchestrate collaboration between services & repositories
 # OOP Principle: Single Responsibility, Dependency Injection
-#
-# NOTE: Dependencies are instantiated inside each route method
-# (lazy initialization) so they are created inside an active
-# Flask application context — required for SQLAlchemy to work
-# correctly under Gunicorn workers.
 # =============================================================
 class AuthController:
-
-    # Role constants
     ROLE_CLIENT = 'client'
     ROLE_ADMIN  = 'admin'
-
-    # Source header constants
     SOURCE_MOBILE = 'mobile'
     SOURCE_WEB    = 'web'
 
     def _get_deps(self):
-        """
-        Lazily instantiate dependencies inside the request context.
-        This ensures SQLAlchemy has an active app context when
-        repositories are created — critical for Gunicorn workers.
-        """
         return (
             UserRepository(),
             OTPRepository(),
@@ -48,16 +33,10 @@ class AuthController:
             PasswordService(),
         )
 
-    # ----------------------------------------------------------
-    # PRIVATE: Resolve role from request source header
-    # ----------------------------------------------------------
     def _resolve_role(self) -> str:
         source = request.headers.get('X-App-Source', self.SOURCE_MOBILE).lower()
         return self.ROLE_ADMIN if source == self.SOURCE_WEB else self.ROLE_CLIENT
 
-    # ----------------------------------------------------------
-    # PRIVATE: Validate login source matches user role
-    # ----------------------------------------------------------
     def _is_authorized_source(self, user) -> bool:
         source = request.headers.get('X-App-Source', self.SOURCE_MOBILE).lower()
         if source == self.SOURCE_MOBILE and not user.is_client():
@@ -71,7 +50,6 @@ class AuthController:
     # ----------------------------------------------------------
     def register(self):
         user_repo, otp_repo, otp_service, validator, password_service = self._get_deps()
-
         data     = request.get_json()
         username = data.get("username", "").strip()
         email    = data.get("email", "").lower().strip()
@@ -85,6 +63,7 @@ class AuthController:
         if user_repo.find_by_email(email):
             log_error('VALIDATION', 'auth', 'Email already registered', user_id=email)
             return jsonify({"success": False, "message": "Email already registered"}), 400
+
         if user_repo.find_by_username(username):
             log_error('VALIDATION', 'auth', 'Username already taken', user_id=username)
             return jsonify({"success": False, "message": "Username already taken"}), 400
@@ -92,24 +71,19 @@ class AuthController:
         try:
             role      = self._resolve_role()
             hashed_pw = password_service.hash(password)
-
             user_repo.create(username, email, hashed_pw, role)
             user_repo.flush()
-
             otp_code = otp_service.generate()
             otp_repo.upsert(email, otp_code)
-
             sent = otp_service.send(email, username, otp_code)
             if not sent:
                 raise Exception("Failed to send verification email")
-
             user_repo.save()
             log_operation('REGISTER', 'auth', {'email': email, 'username': username, 'role': role}, success=True)
             return jsonify({
                 "success": True,
                 "message": "Verification code sent to your email",
             }), 201
-
         except Exception as e:
             user_repo.rollback()
             log_error('EXCEPTION', 'auth', str(e), user_id=email, exception=e)
@@ -117,10 +91,12 @@ class AuthController:
 
     # ----------------------------------------------------------
     # VERIFY EMAIL
+    # FIX: Now returns user_id, username, email AND a JWT token
+    # so the Flutter app can auto-login immediately after verification
+    # without requiring the user to re-enter their credentials.
     # ----------------------------------------------------------
     def verify_email(self):
         user_repo, otp_repo, _, _, _ = self._get_deps()
-
         data      = request.get_json()
         email     = data.get("email", "").lower().strip()
         user_code = data.get("code", "").strip()
@@ -143,21 +119,30 @@ class AuthController:
         otp_repo.delete(record)
         user_repo.save()
 
+        # Generate a JWT so the frontend can skip the login step
+        token = JWTService.generate(user.id, user.email, user.role)
+
         log_operation('VERIFY_EMAIL', 'auth', {'email': email, 'user_id': user.id}, user_id=user.id, success=True)
-        return jsonify({"success": True, "message": "Email verified successfully!"}), 200
+        return jsonify({
+            "success":  True,
+            "message":  "Email verified successfully!",
+            # FIX: include user data + token for auto-login
+            "user_id":  str(user.id),
+            "username": user.username,
+            "email":    user.email,
+            "token":    token,
+        }), 200
 
     # ----------------------------------------------------------
     # LOGIN
     # ----------------------------------------------------------
     def login(self):
         user_repo, _, _, _, password_service = self._get_deps()
-
         data     = request.get_json()
         email    = data.get("email", "").lower().strip()
         password = data.get("password", "")
 
         user = user_repo.find_by_email(email)
-
         if not user or not password_service.verify(password, user.password):
             log_error('AUTH', 'auth', 'Invalid email or password', user_id=email)
             return jsonify({"success": False, "message": "Invalid email or password"}), 401
@@ -177,10 +162,9 @@ class AuthController:
                 "message": "Please verify your email first",
             }), 403
 
-        token = JWTService.generate(user.id, user.email, user.role)
+        token     = JWTService.generate(user.id, user.email, user.role)
         user_data = user.to_dict()
         user_data['token'] = token
-
         log_operation('LOGIN', 'auth', {'user_id': user.id, 'email': email, 'role': user.role}, user_id=user.id, success=True)
         return jsonify({"success": True, **user_data}), 200
 
@@ -189,7 +173,6 @@ class AuthController:
     # ----------------------------------------------------------
     def resend_otp(self):
         user_repo, otp_repo, otp_service, _, _ = self._get_deps()
-
         data  = request.get_json()
         email = data.get("email", "").lower().strip()
 
@@ -205,15 +188,12 @@ class AuthController:
         try:
             otp_code = otp_service.generate()
             otp_repo.upsert(email, otp_code)
-
             sent = otp_service.send(email, user.username, otp_code)
             if not sent:
                 raise Exception("Failed to send verification email")
-
             user_repo.save()
             log_operation('RESEND_OTP', 'auth', {'email': email, 'user_id': user.id}, user_id=user.id, success=True)
             return jsonify({"success": True, "message": "New verification code sent"}), 200
-
         except Exception as e:
             user_repo.rollback()
             log_error('EXCEPTION', 'auth', str(e), user_id=email, exception=e)
@@ -222,11 +202,8 @@ class AuthController:
 
 # =============================================================
 # ROUTE REGISTRATION
-# One controller instance — methods are bound per request so
-# each call gets fresh dependencies inside the app context
 # =============================================================
 _controller = AuthController()
-
 auth_bp.add_url_rule("/register",     view_func=_controller.register,     methods=["POST"])
 auth_bp.add_url_rule("/verify-email", view_func=_controller.verify_email, methods=["POST"])
 auth_bp.add_url_rule("/login",        view_func=_controller.login,         methods=["POST"])
