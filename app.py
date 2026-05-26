@@ -5,6 +5,7 @@ from models  import db
 from auth    import auth_bp
 from tickets import tickets_bp
 from services_bp import services_bp
+from analytics_bp import analytics_bp
 from dotenv  import load_dotenv
 from utils.logger import setup_logger, log_request_info, log_response_info, logger
 
@@ -13,10 +14,6 @@ load_dotenv()
 
 # =============================================================
 # APPLICATION FACTORY
-# Changes vs original:
-#   - Registered services_bp at /api  (new)
-#   - Added BASE_URL config for QR code URL generation (new)
-#   - Updated health check to list all endpoints
 # =============================================================
 def create_app() -> Flask:
     app = Flask(__name__)
@@ -30,8 +27,6 @@ def create_app() -> Flask:
     app.config['MAIL_DEFAULT_SENDER'] = os.getenv('MAIL_SENDER')
 
     # --- QR Code base URL (set in .env as BASE_URL) ---
-    # Example: BASE_URL=https://tickety.app
-    # The QR encodes: BASE_URL/scan/<service_token>
     app.config['BASE_URL'] = os.getenv('BASE_URL', 'http://localhost:5000')
 
     # --- Extensions ---
@@ -42,9 +37,10 @@ def create_app() -> Flask:
     CORS(app, origins=cors_origins, supports_credentials=True)
 
     # --- Blueprints ---
-    app.register_blueprint(auth_bp,     url_prefix='/api')
-    app.register_blueprint(tickets_bp,  url_prefix='/api')
-    app.register_blueprint(services_bp, url_prefix='/api')  # ← NEW
+    app.register_blueprint(auth_bp,      url_prefix='/api')
+    app.register_blueprint(tickets_bp,   url_prefix='/api')
+    app.register_blueprint(services_bp,  url_prefix='/api')
+    app.register_blueprint(analytics_bp, url_prefix='/api')  # ← NEW
 
     # --- Request/Response Logging ---
     @app.before_request
@@ -85,6 +81,10 @@ def create_app() -> Flask:
                     'DELETE /api/services/<id>       (admin)',
                     'POST   /api/services/<id>/regenerate-qr (admin)',
                     'GET    /api/services/<id>/qr.png',
+                ],
+                'analytics': [
+                    'GET    /api/analytics/wait-times?user_id=',
+                    'GET    /api/analytics/summary?user_id=',
                 ],
             },
         }
