@@ -39,15 +39,28 @@ class OTPService:
             "api-key":      api_key,
         }
 
+
         try:
             response = requests.post(
                 "https://api.brevo.com/v3/smtp/email",
                 json=payload,
                 headers=headers,
             )
+            print(f"Brevo status: {response.status_code}")
+            print(f"Brevo response: {response.text}")   # ← ADD THIS
             return response.status_code in [200, 201]
-        except requests.RequestException:
-            return False
+        except requests.RequestException as e:
+                print(f"Brevo request error: {e}")           # ← ADD THIS
+                return False
+        # try:
+        #     response = requests.post(
+        #         "https://api.brevo.com/v3/smtp/email",
+        #         json=payload,
+        #         headers=headers,
+        #     )
+        #     return response.status_code in [200, 201]
+        # except requests.RequestException:
+        #     return False
 
     def _build_email_html(self, username: str, otp_code: str) -> str:
         """Build and return the HTML body for the OTP email."""
