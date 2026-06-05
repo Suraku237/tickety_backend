@@ -20,7 +20,7 @@ load_dotenv()
 def create_app() -> Flask:
     app = Flask(__name__)
 
-    # --- MySQL ---
+    # --- Database ---
     app.config["SQLALCHEMY_DATABASE_URI"]        = os.getenv("DATABASE_URL")
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
@@ -29,16 +29,13 @@ def create_app() -> Flask:
     app.config["MAIL_DEFAULT_SENDER"] = os.getenv("MAIL_SENDER")
 
     # --- Base URL (used for QR join links + invite links) ---
-    app.config["BASE_URL"] = os.getenv("BASE_URL", "https://tickety.app")
+    app.config["BASE_URL"] = os.getenv("BASE_URL", "http://109.199.120.38:5000")
 
     # --- Extensions ---
     db.init_app(app)
 
-    CORS(app, supports_credentials=True, origins=[
-        "http://localhost:5173",
-        "http://localhost:3000",
-        "*",   # restrict in production
-    ])
+    cors_origins = os.getenv("CORS_ORIGINS", "").split(",")
+    CORS(app, supports_credentials=True, origins=cors_origins)
 
     # --- Blueprints ---
     app.register_blueprint(auth_bp,      url_prefix="/api")
@@ -71,9 +68,9 @@ if __name__ == "__main__":
     with app.app_context():
         try:
             db.engine.connect()
-            print("✅ Connected to MySQL database.")
+            print("✅ Connected to database.")
         except Exception as e:
             print(f"❌ Database connection failed: {e}")
 
-    print("🚀 TICKETY server starting on http://localhost:5000 ...")
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    print("🚀 TICKETY server starting on http://109.199.120.38:5000 ...")
+    app.run(host="0.0.0.0", port=5000, debug=False)
