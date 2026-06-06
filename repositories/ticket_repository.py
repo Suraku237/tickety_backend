@@ -7,14 +7,6 @@ from datetime import date
 # Responsibilities:
 #   - Abstract all DB operations for Ticket
 # OOP Principle: Single Responsibility, Encapsulation
-#
-# NOTE ON ORDERING:
-#   MySQL does not support NULLS FIRST / NULLS LAST syntax.
-#   Wherever we need NULLs last (position ordering), we use
-#   a CASE expression:
-#     CASE WHEN position IS NULL THEN 9999 ELSE position END ASC
-#   This pushes NULL positions (served/suspended/carried_over
-#   tickets) to the end of the result set.
 # =============================================================
 class TicketRepository:
 
@@ -33,16 +25,20 @@ class TicketRepository:
     VALID_STATUSES   = {STATUS_PENDING, STATUS_ACTIVE, STATUS_SUSPENDED, STATUS_SERVED, STATUS_CARRIED_OVER}
     VALID_PRIORITIES = {PRIORITY_NORMAL, PRIORITY_HIGH, PRIORITY_URGENT}
 
+    # Minimum number of real served tickets required before we
+    # trust the rolling average over the manually configured value.
+    ROLLING_AVG_MIN_SAMPLES = 5
+
+    # How many recent served tickets to include in the rolling average.
+    # Keeps the estimate responsive to recent pace changes rather than
+    # being dragged down by very old data.
+    ROLLING_AVG_WINDOW = 20
+
     # ----------------------------------------------------------
     # SHARED: MySQL-safe position ordering expression
-    # Puts NULL positions at the end (9999), then sorts by issued_at
     # ----------------------------------------------------------
     @staticmethod
     def _position_order():
-        """
-        Returns a SQLAlchemy order expression that sorts tickets
-        by position ascending with NULLs last — MySQL compatible.
-        """
         return db.case(
             (Ticket.position == None, 9999),
             else_=Ticket.position
@@ -52,10 +48,6 @@ class TicketRepository:
         return Ticket.query.get(ticket_id)
 
     def find_by_queue(self, queue_id: int) -> list[Ticket]:
-        """
-        All non-served tickets in a queue, ordered by position
-        (NULLs last) then issued_at.
-        """
         return (Ticket.query
                 .filter_by(queue_id=queue_id)
                 .filter(Ticket.status != self.STATUS_SERVED)
@@ -66,10 +58,6 @@ class TicketRepository:
                 .all())
 
     def find_by_service(self, service_id: int) -> list[Ticket]:
-        """
-        All active/pending/suspended tickets for a service
-        (counter view), ordered by position then issued_at.
-        """
         return (Ticket.query
                 .filter_by(service_id=service_id)
                 .filter(Ticket.status.in_([
@@ -84,10 +72,6 @@ class TicketRepository:
                 .all())
 
     def find_carried_over(self, service_id: int) -> list[Ticket]:
-        """
-        All carried-over tickets for a service, ordered by
-        original carried_over_date then issued_at.
-        """
         return (Ticket.query
                 .filter_by(service_id=service_id, status=self.STATUS_CARRIED_OVER)
                 .order_by(
@@ -97,7 +81,6 @@ class TicketRepository:
                 .all())
 
     def find_serving(self, service_id: int) -> Ticket | None:
-        """The ticket currently being served at this service."""
         return Ticket.query.filter_by(
             service_id=service_id,
             status=self.STATUS_ACTIVE,
@@ -105,7 +88,6 @@ class TicketRepository:
         ).first()
 
     def next_position(self, queue_id: int) -> int:
-        """Return the next available position in a queue."""
         last = (Ticket.query
                 .filter_by(queue_id=queue_id)
                 .filter(Ticket.status.in_([
@@ -118,7 +100,6 @@ class TicketRepository:
         return (last.position + 1) if last else 0
 
     def next_code_number(self, queue_id: int) -> int:
-        """Return the next sequential code number for a queue."""
         count = Ticket.query.filter_by(queue_id=queue_id).count()
         return count + 1
 
@@ -139,8 +120,7 @@ class TicketRepository:
 
     def reindex_positions(self, queue_id: int):
         """
-        Re-assign sequential positions (0, 1, 2…) to all
-        pending/active tickets in a queue after a swap or delete.
+        Re-assign sequential positions to all pending/active tickets.
         Does NOT commit.
         """
         tickets = (Ticket.query
@@ -158,9 +138,58 @@ class TicketRepository:
         for i, t in enumerate(tickets):
             t.position = i
 
+    # ----------------------------------------------------------
+    # ROLLING AVERAGE DURATION
+    # ----------------------------------------------------------
+    def compute_rolling_avg_duration(
+        self,
+        queue_id: int,
+        fallback: int = 10,
+    ) -> int:
+        """
+        Compute the average real wait time (in minutes) from the
+        most recent ROLLING_AVG_WINDOW served tickets in this queue
+        that have both issued_at and called_at stamped.
+
+        called_at is set the moment the agent calls the ticket
+        (status → active), so:
+            real_wait = called_at − issued_at
+
+        Falls back to `fallback` (the manually configured
+        avg_duration) when fewer than ROLLING_AVG_MIN_SAMPLES
+        real samples exist — so cold-start behaviour is unchanged.
+
+        Returns an integer number of minutes (minimum 1).
+        """
+        recent_served = (
+            Ticket.query
+            .filter_by(queue_id=queue_id, status=self.STATUS_SERVED)
+            .filter(Ticket.called_at  != None)
+            .filter(Ticket.issued_at  != None)
+            .order_by(Ticket.called_at.desc())
+            .limit(self.ROLLING_AVG_WINDOW)
+            .all()
+        )
+
+        # Not enough data yet — use the manual fallback
+        if len(recent_served) < self.ROLLING_AVG_MIN_SAMPLES:
+            return fallback
+
+        waits = [
+            t.actual_wait_minutes()
+            for t in recent_served
+            if t.actual_wait_minutes() is not None
+        ]
+
+        if not waits:
+            return fallback
+
+        avg = sum(waits) / len(waits)
+        return max(1, round(avg))   # never go below 1 minute
+
     def delete(self, ticket: Ticket):
         db.session.delete(ticket)
 
     def save(self):     db.session.commit()
     def rollback(self): db.session.rollback()
-    def flush(self):    db.session.flush()
+    def flush(self):    db.session.flush()  # ✅

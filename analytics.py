@@ -10,7 +10,7 @@ analytics_bp = Blueprint("analytics", __name__)
 # Responsibilities:
 #   - Average tickets per day
 #   - Priority breakdown (counts + percentages)
-#   - Average wait time per queue
+#   - Average wait time per queue (using actual schedule avg_duration)
 #   - Peak day of the week
 # OOP Principle: Single Responsibility, Encapsulation
 # =============================================================
@@ -33,6 +33,9 @@ class AnalyticsController:
     # GET /api/analytics?service_id=<id>&period=week|last_week|month
     # ----------------------------------------------------------
     def get_analytics(self):
+        from repositories.schedule_repository import ScheduleRepository
+        from repositories.admin_repository    import AdminRepository
+
         service_id = request.args.get("service_id")
         period     = request.args.get("period", "week")
 
@@ -71,22 +74,52 @@ class AnalyticsController:
             })
 
         # --- Avg wait time per queue ---
+        # Uses the actual schedule avg_duration for the service,
+        # multiplied by average position of served tickets.
+        # Falls back to 10 min if no schedule is configured.
         from models import Queue
-        queues = Queue.query.filter_by(service_id=sid).all()
+        schedule_repo = ScheduleRepository()
+        schedule      = schedule_repo.resolve_for_today(sid)
+        avg_duration  = schedule.avg_duration if schedule else 10
+
+        queues      = Queue.query.filter_by(service_id=sid).all()
         queue_stats = []
         for q in queues:
-            q_tickets = [t for t in tickets if t.queue_id == q.id and t.status == 'served']
-            if q_tickets:
-                # Estimate: average position × assume avg_duration=10 as fallback
-                avg_pos = sum(t.position or 0 for t in q_tickets) / len(q_tickets)
-                avg_wait = round(avg_pos * 10)
+            # Count ALL tickets for this queue in range (for the tickets column)
+            q_all = [t for t in tickets if t.queue_id == q.id]
+
+            # For avg wait: use served tickets that have an estimated_serve_at
+            # and issued_at — compute actual wait as difference
+            q_served = [
+                t for t in q_all
+                if t.status == 'served'
+                and t.estimated_serve_at
+                and t.issued_at
+            ]
+
+            if q_served:
+                # Average wait = mean of (estimated_serve_at - issued_at) in minutes
+                waits = [
+                    (t.estimated_serve_at - t.issued_at.replace(tzinfo=timezone.utc)
+                     if t.issued_at.tzinfo is None
+                     else t.estimated_serve_at - t.issued_at).total_seconds() / 60
+                    for t in q_served
+                ]
+                avg_wait = round(sum(waits) / len(waits))
             else:
-                avg_wait = 0
+                # Fallback: estimate from pending tickets' positions × avg_duration
+                q_pending = [t for t in q_all if t.status in ('pending', 'active') and t.position is not None]
+                if q_pending:
+                    avg_pos  = sum(t.position for t in q_pending) / len(q_pending)
+                    avg_wait = round(avg_pos * avg_duration)
+                else:
+                    avg_wait = 0
+
             queue_stats.append({
                 "queue_id":   str(q.id),
                 "queue_name": q.name,
                 "avg_wait":   avg_wait,
-                "tickets":    len([t for t in tickets if t.queue_id == q.id]),
+                "tickets":    len(q_all),
             })
 
         # --- Tickets per day of week ---
@@ -99,12 +132,22 @@ class AnalyticsController:
         daily = [{"day": day_labels[i], "count": day_counts[i]} for i in range(7)]
         peak  = max(daily, key=lambda x: x["count"], default={"day": "—"})
 
+        # --- Team count ---
+        admin_repo  = AdminRepository()
+        team_count  = len(admin_repo.find_by_service(sid))
+
+        # --- Avg wait across all queues (for KPI card) ---
+        all_waits = [q["avg_wait"] for q in queue_stats if q["avg_wait"] > 0]
+        global_avg_wait = round(sum(all_waits) / len(all_waits)) if all_waits else "—"
+
         return jsonify({
             "success":            True,
             "period":             period,
             "total_tickets":      total,
             "avg_per_day":        avg_per_day,
+            "avg_wait":           global_avg_wait,
             "peak_day":           peak["day"],
+            "team_count":         team_count,
             "priority_breakdown": priority_breakdown,
             "queue_stats":        queue_stats,
             "daily":              daily,

@@ -10,7 +10,29 @@ from models import Ticket, ServiceSchedule
 #   - Check if a ticket's estimated time exceeds closing time
 #   - Provide closing time warning data for the frontend popup
 # OOP Principle: Single Responsibility, Abstraction
+#
+# NOTE ON DATETIME CONVENTION:
+#   All datetimes are stored and compared as naive UTC.
+#   MySQL/SQLite strip timezone info on DATETIME columns, so
+#   estimated_serve_at always comes back from the DB as naive.
+#   To avoid offset-naive vs offset-aware TypeError, this service
+#   never attaches tzinfo to datetimes used in comparisons or
+#   stored on model fields. datetime.utcnow() is used instead of
+#   datetime.now(timezone.utc) everywhere for consistency.
 # =============================================================
+
+def _utcnow() -> datetime:
+    """Return the current UTC time as a naive datetime (no tzinfo)."""
+    return datetime.utcnow()
+
+
+def _strip_tz(dt: datetime | None) -> datetime | None:
+    """Strip tzinfo from a datetime if present, leaving value unchanged."""
+    if dt is None:
+        return None
+    return dt.replace(tzinfo=None) if dt.tzinfo else dt
+
+
 class ScheduleService:
 
     # ----------------------------------------------------------
@@ -18,6 +40,7 @@ class ScheduleService:
     # Formula:
     #   estimated_serve_at = now + (position × avg_duration_minutes)
     # Called when a ticket is issued and when the queue moves.
+    # Returns a naive UTC datetime safe for DB storage.
     # ----------------------------------------------------------
     def compute_estimated_serve_at(
         self,
@@ -28,9 +51,10 @@ class ScheduleService:
         """
         Return the estimated datetime at which a ticket at
         the given position will be served.
-        base_time defaults to now (UTC).
+        base_time defaults to now (naive UTC).
+        Always returns a naive datetime.
         """
-        base = base_time or datetime.now(timezone.utc)
+        base = _strip_tz(base_time) if base_time else _utcnow()
         return base + timedelta(minutes=position * avg_duration)
 
     # ----------------------------------------------------------
@@ -45,7 +69,7 @@ class ScheduleService:
         if not schedule or not schedule.is_open:
             return False
 
-        now_time = datetime.now(timezone.utc).time()
+        now_time = _utcnow().time()
         return schedule.opening_time <= now_time <= schedule.closing_time
 
     # ----------------------------------------------------------
@@ -60,17 +84,19 @@ class ScheduleService:
         Return True if the estimated serve time is at or after
         today's closing time — meaning the ticket should be
         carried over to the next working day.
+        Both datetimes are compared as naive UTC.
         """
         if not schedule or not schedule.is_open:
             return False
 
-        today = datetime.now(timezone.utc).date()
-        closing_dt = datetime.combine(
-            today,
-            schedule.closing_time,
-        ).replace(tzinfo=timezone.utc)
+        if estimated_serve_at is None:
+            return False
 
-        return estimated_serve_at >= closing_dt
+        today      = _utcnow().date()
+        closing_dt = datetime.combine(today, schedule.closing_time)  # naive
+        est        = _strip_tz(estimated_serve_at)
+
+        return est >= closing_dt
 
     # ----------------------------------------------------------
     # CLOSING TIME WARNING PAYLOAD
@@ -92,22 +118,22 @@ class ScheduleService:
         if not schedule:
             return {"warning": False}
 
-        today = datetime.now(timezone.utc).date()
-        closing_dt = datetime.combine(
-            today, schedule.closing_time
-        ).replace(tzinfo=timezone.utc)
+        today      = _utcnow().date()
+        closing_dt = datetime.combine(today, schedule.closing_time)  # naive
 
         return {
-            "warning":       len(tickets_exceeding) > 0,
-            "closing_time":  str(schedule.closing_time),
-            "closing_dt":    closing_dt.isoformat(),
-            "affected_count": len(tickets_exceeding),
+            "warning":          len(tickets_exceeding) > 0,
+            "closing_time":     str(schedule.closing_time),
+            "closing_dt":       closing_dt.isoformat(),
+            "affected_count":   len(tickets_exceeding),
             "affected_tickets": [
                 {
-                    "ticket_id":          str(t.id),
-                    "code":               t.code,
-                    "estimated_serve_at": t.estimated_serve_at.isoformat()
-                    if t.estimated_serve_at else None,
+                    "ticket_id":           str(t.id),
+                    "code":                t.code,
+                    "estimated_serve_at":  (
+                        _strip_tz(t.estimated_serve_at).isoformat()
+                        if t.estimated_serve_at else None
+                    ),
                     "customer_identifier": t.customer_identifier,
                 }
                 for t in tickets_exceeding
@@ -129,9 +155,10 @@ class ScheduleService:
         Recompute estimated_serve_at for each ticket in the list
         (already sorted by position ascending).
         Mutates the ticket objects in place — caller must commit.
-        Returns tickets whose estimate now exceeds closing time.
+        Returns the mutated ticket list.
+        base_time defaults to now (naive UTC).
         """
-        base = base_time or datetime.now(timezone.utc)
+        base = _strip_tz(base_time) if base_time else _utcnow()
         for ticket in tickets:
             if ticket.position is not None:
                 ticket.estimated_serve_at = self.compute_estimated_serve_at(
