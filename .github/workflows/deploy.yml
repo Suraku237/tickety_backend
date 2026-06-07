@@ -22,14 +22,18 @@ jobs:
           key:      ${{ secrets.VPS_SSH_KEY }}
           port:     ${{ secrets.VPS_PORT }}
           script: |
-            echo "🚀 Starting deployment..."
+            set -e
 
+            echo "🚀 Starting deployment..."
             cd /root/tickety_backend
 
             echo "📥 Force-pulling latest code..."
             git fetch origin main
             git reset --hard origin/main
             git clean -fd
+
+            echo "🐍 Ensuring venv exists..."
+            python3 -m venv venv
 
             echo "📦 Installing dependencies..."
             source venv/bin/activate
