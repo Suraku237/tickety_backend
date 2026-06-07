@@ -26,8 +26,10 @@ jobs:
 
             cd /root/tickety_backend
 
-            echo "📥 Pulling latest code..."
-            git pull origin main
+            echo "📥 Force-pulling latest code..."
+            git fetch origin main
+            git reset --hard origin/main
+            git clean -fd
 
             echo "📦 Installing dependencies..."
             source venv/bin/activate
