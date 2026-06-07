@@ -2,10 +2,7 @@ from flask import Blueprint, request, jsonify
 from repositories.user_repository    import UserRepository
 from repositories.service_repository import ServiceRepository
 from repositories.admin_repository   import AdminRepository
-from repositories.ticket_repository   import TicketRepository
-from repositories.schedule_repository import ScheduleRepository
-from services.schedule_service        import ScheduleService
-from collections import defaultdict
+from models import db, Service, Queue, Ticket
 
 service_bp = Blueprint("service", __name__)
 
@@ -116,6 +113,72 @@ class ServiceController:
             return jsonify({"success": False, "message": str(e)}), 500
 
     # ----------------------------------------------------------
+    # BROWSE SERVICES
+    # GET /api/services/browse?query=<str>&user_email=<str>
+    # Returns all services with live stats:
+    #   people_waiting, avg_wait_minutes, num_queues, visited.
+    # Optional `query` filters by name (case-insensitive).
+    # `user_email` is used to flag services the user has visited.
+    # ----------------------------------------------------------
+    def browse_services(self):
+        user_repo, service_repo, _ = self._get_deps()
+
+        query      = request.args.get('query',      '').strip().lower()
+        user_email = request.args.get('user_email', '').strip().lower()
+
+        # Resolve the requesting user (optional — used for `visited` flag)
+        user = user_repo.find_by_email(user_email) if user_email else None
+
+        # Fetch all services, optionally filtered by name
+        services_q = Service.query
+        if query:
+            services_q = services_q.filter(Service.name.ilike(f'%{query}%'))
+        all_services = services_q.order_by(Service.name).all()
+
+        # Get service IDs the user has tickets for (= "visited")
+        visited_ids: set = set()
+        if user:
+            rows = (db.session.query(Ticket.service_id)
+                    .filter(Ticket.customer_identifier == user_email)
+                    .distinct().all())
+            visited_ids = {r[0] for r in rows}
+
+        result = []
+        for svc in all_services:
+            # Count active queues and waiting tickets
+            queues = Queue.query.filter_by(service_id=svc.id).all()
+            num_queues     = len(queues)
+            people_waiting = 0
+            total_wait     = 0
+            ticket_count   = 0
+
+            for q in queues:
+                active_tickets = [
+                    t for t in q.tickets
+                    if t.status in ('active', 'pending')
+                ]
+                people_waiting += len(active_tickets)
+                for t in active_tickets:
+                    if t.estimated_serve_at and t.issued_at:
+                        diff = (t.estimated_serve_at - t.issued_at).total_seconds() / 60
+                        if diff > 0:
+                            total_wait   += diff
+                            ticket_count += 1
+
+            avg_wait = int(total_wait / ticket_count) if ticket_count else 0
+
+            result.append({
+                'service_id':       str(svc.id),
+                'service_name':     svc.name,
+                'people_waiting':   people_waiting,
+                'avg_wait_minutes': avg_wait,
+                'num_queues':       num_queues,
+                'visited':          svc.id in visited_ids,
+            })
+
+        return jsonify({'success': True, 'services': result}), 200
+
+    # ----------------------------------------------------------
     # GET MY SERVICES
     # Returns all services owned by the authenticated user.
     # (Useful later for a service selector if a boss owns multiple)
@@ -136,59 +199,6 @@ class ServiceController:
             "success":  True,
             "services": [s.to_dict() for s in services],
         }), 200
-
-    # ----------------------------------------------------------
-    # BROWSE SERVICES  (public — for the mobile "choose a service" page)
-    # GET /api/services/browse?q=<search>&user_email=<email>
-    #
-    # Returns every service (optionally filtered by name search),
-    # each annotated with:
-    #   - people_waiting     current pending/active tickets
-    #   - avg_wait_minutes   estimated current wait if you joined now
-    #   - visited            whether this user has a ticket history here
-    # Lets a customer compare services by wait time before joining.
-    # ----------------------------------------------------------
-    def browse_services(self):
-        _, service_repo, _ = self._get_deps()
-        ticket_repo   = TicketRepository()
-        schedule_repo = ScheduleRepository()
-        schedule_svc  = ScheduleService()
-
-        q          = (request.args.get("q") or "").strip()
-        user_email = (request.args.get("user_email") or "").strip().lower()
-
-        services = service_repo.search_by_name(q) if q else service_repo.find_all()
-
-        result = []
-        for svc in services:
-            schedule = schedule_repo.resolve_for_today(svc.id)
-            tickets  = ticket_repo.find_by_service(svc.id)   # active/pending/suspended
-            waiting  = [t for t in tickets
-                        if t.status in (ticket_repo.STATUS_PENDING, ticket_repo.STATUS_ACTIVE)]
-
-            per_queue = defaultdict(int)
-            for t in waiting:
-                per_queue[t.queue_id] += 1
-
-            queue_waits = []
-            for qid, count in per_queue.items():
-                avg = schedule_svc.effective_avg(ticket_repo, qid, schedule)
-                queue_waits.append(count * avg)
-            avg_wait_minutes = round(sum(queue_waits) / len(queue_waits)) if queue_waits else 0
-
-            result.append({
-                **svc.to_dict(),
-                "people_waiting":   len(waiting),
-                "avg_wait_minutes": avg_wait_minutes,
-                "num_queues":       len(svc.queues),
-                "visited":          ticket_repo.has_visited(svc.id, user_email) if user_email else False,
-            })
-
-        # Show not-yet-visited services with the shortest waits first;
-        # the client can re-sort however it likes.
-        result.sort(key=lambda s: (s["visited"], s["avg_wait_minutes"]))
-
-        return jsonify({"success": True, "services": result}), 200
 
 
 # =============================================================
