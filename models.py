@@ -211,10 +211,17 @@ class Ticket(db.Model):
     position            = db.Column(db.Integer,     nullable=True)
     counter             = db.Column(db.String(20),  nullable=True)
     customer_identifier = db.Column(db.String(120), nullable=True)
-    printed             = db.Column(db.Boolean,     nullable=False, default=False)  # NEW
+    printed             = db.Column(db.Boolean,     nullable=False, default=False)  # manually issued printed ticket
     issued_at           = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    called_at           = db.Column(db.DateTime, nullable=True)   # stamped when agent calls the ticket (status -> active)
     estimated_serve_at  = db.Column(db.DateTime, nullable=True)
     carried_over_date   = db.Column(db.Date,     nullable=True)
+
+    def actual_wait_minutes(self):
+        """Real wait (minutes) between issue and being called, or None."""
+        if self.issued_at and self.called_at:
+            return max(0, int((self.called_at - self.issued_at).total_seconds() / 60))
+        return None
 
     def is_carried_over(self): return self.status == 'carried_over'
     def is_pending(self):      return self.status == 'pending'
@@ -235,6 +242,7 @@ class Ticket(db.Model):
             "customer_identifier": self.customer_identifier,
             "printed":             self.printed,
             "issued_at":           self.issued_at.isoformat() if self.issued_at else None,
+            "called_at":           self.called_at.isoformat() if self.called_at else None,
             "estimated_serve_at":  self.estimated_serve_at.isoformat() if self.estimated_serve_at else None,
             "carried_over_date":   str(self.carried_over_date) if self.carried_over_date else None,
         }
@@ -355,3 +363,52 @@ class Notification(db.Model):
 
     def __repr__(self):
         return f"<Notification service_id={self.service_id} type={self.type} read={self.read}>"
+
+# =============================================================
+# SWAP REQUEST MODEL  (merged from mobile backend)
+# Responsibilities:
+#   - Represent a request by one ticket holder to swap queue
+#     position with another ticket holder
+#   - status: pending | accepted | rejected | expired
+# OOP Principle: Encapsulation — status transitions guarded by
+#                helper predicates and class-level constants
+# =============================================================
+class SwapRequest(db.Model):
+    __tablename__ = 'swap_requests'
+
+    id                  = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    service_id          = db.Column(db.Integer, db.ForeignKey('services.id', ondelete='CASCADE'), nullable=False)
+    requester_ticket_id = db.Column(db.Integer, db.ForeignKey('tickets.id',  ondelete='CASCADE'), nullable=False)
+    target_ticket_id    = db.Column(db.Integer, db.ForeignKey('tickets.id',  ondelete='CASCADE'), nullable=False)
+    status              = db.Column(db.String(20), nullable=False, default='pending')
+    created_at          = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    responded_at        = db.Column(db.DateTime, nullable=True)
+
+    requester_ticket = db.relationship('Ticket', foreign_keys=[requester_ticket_id])
+    target_ticket    = db.relationship('Ticket', foreign_keys=[target_ticket_id])
+
+    STATUS_PENDING  = 'pending'
+    STATUS_ACCEPTED = 'accepted'
+    STATUS_REJECTED = 'rejected'
+    STATUS_EXPIRED  = 'expired'
+
+    def is_pending(self):  return self.status == self.STATUS_PENDING
+    def is_accepted(self): return self.status == self.STATUS_ACCEPTED
+    def is_rejected(self): return self.status == self.STATUS_REJECTED
+
+    def to_dict(self):
+        return {
+            "swap_id":              str(self.id),
+            "service_id":           str(self.service_id),
+            "requester_ticket_id":  str(self.requester_ticket_id),
+            "target_ticket_id":     str(self.target_ticket_id),
+            "status":               self.status,
+            "created_at":           self.created_at.isoformat() if self.created_at else None,
+            "responded_at":         self.responded_at.isoformat() if self.responded_at else None,
+        }
+
+    def __repr__(self):
+        return (f"<SwapRequest id={self.id} "
+                f"req={self.requester_ticket_id} "
+                f"tgt={self.target_ticket_id} "
+                f"status={self.status}>")

@@ -28,6 +28,12 @@ class AnalyticsController:
         start = now - timedelta(days=days)
         return start, now
 
+    def _to_utc(self, dt):
+        """Ensure a datetime is timezone-aware (UTC). Safe for both naive and aware datetimes."""
+        if dt is None:
+            return None
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
     # ----------------------------------------------------------
     # GET ANALYTICS
     # GET /api/analytics?service_id=<id>&period=week|last_week|month
@@ -74,9 +80,6 @@ class AnalyticsController:
             })
 
         # --- Avg wait time per queue ---
-        # Uses the actual schedule avg_duration for the service,
-        # multiplied by average position of served tickets.
-        # Falls back to 10 min if no schedule is configured.
         from models import Queue
         schedule_repo = ScheduleRepository()
         schedule      = schedule_repo.resolve_for_today(sid)
@@ -85,11 +88,8 @@ class AnalyticsController:
         queues      = Queue.query.filter_by(service_id=sid).all()
         queue_stats = []
         for q in queues:
-            # Count ALL tickets for this queue in range (for the tickets column)
             q_all = [t for t in tickets if t.queue_id == q.id]
 
-            # For avg wait: use served tickets that have an estimated_serve_at
-            # and issued_at — compute actual wait as difference
             q_served = [
                 t for t in q_all
                 if t.status == 'served'
@@ -98,16 +98,13 @@ class AnalyticsController:
             ]
 
             if q_served:
-                # Average wait = mean of (estimated_serve_at - issued_at) in minutes
+                # Normalize both datetimes to UTC-aware before subtracting
                 waits = [
-                    (t.estimated_serve_at - t.issued_at.replace(tzinfo=timezone.utc)
-                     if t.issued_at.tzinfo is None
-                     else t.estimated_serve_at - t.issued_at).total_seconds() / 60
+                    (self._to_utc(t.estimated_serve_at) - self._to_utc(t.issued_at)).total_seconds() / 60
                     for t in q_served
                 ]
                 avg_wait = round(sum(waits) / len(waits))
             else:
-                # Fallback: estimate from pending tickets' positions × avg_duration
                 q_pending = [t for t in q_all if t.status in ('pending', 'active') and t.position is not None]
                 if q_pending:
                     avg_pos  = sum(t.position for t in q_pending) / len(q_pending)

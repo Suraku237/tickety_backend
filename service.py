@@ -2,6 +2,10 @@ from flask import Blueprint, request, jsonify
 from repositories.user_repository    import UserRepository
 from repositories.service_repository import ServiceRepository
 from repositories.admin_repository   import AdminRepository
+from repositories.ticket_repository   import TicketRepository
+from repositories.schedule_repository import ScheduleRepository
+from services.schedule_service        import ScheduleService
+from collections import defaultdict
 
 service_bp = Blueprint("service", __name__)
 
@@ -133,6 +137,59 @@ class ServiceController:
             "services": [s.to_dict() for s in services],
         }), 200
 
+    # ----------------------------------------------------------
+    # BROWSE SERVICES  (public — for the mobile "choose a service" page)
+    # GET /api/services/browse?q=<search>&user_email=<email>
+    #
+    # Returns every service (optionally filtered by name search),
+    # each annotated with:
+    #   - people_waiting     current pending/active tickets
+    #   - avg_wait_minutes   estimated current wait if you joined now
+    #   - visited            whether this user has a ticket history here
+    # Lets a customer compare services by wait time before joining.
+    # ----------------------------------------------------------
+    def browse_services(self):
+        _, service_repo, _ = self._get_deps()
+        ticket_repo   = TicketRepository()
+        schedule_repo = ScheduleRepository()
+        schedule_svc  = ScheduleService()
+
+        q          = (request.args.get("q") or "").strip()
+        user_email = (request.args.get("user_email") or "").strip().lower()
+
+        services = service_repo.search_by_name(q) if q else service_repo.find_all()
+
+        result = []
+        for svc in services:
+            schedule = schedule_repo.resolve_for_today(svc.id)
+            tickets  = ticket_repo.find_by_service(svc.id)   # active/pending/suspended
+            waiting  = [t for t in tickets
+                        if t.status in (ticket_repo.STATUS_PENDING, ticket_repo.STATUS_ACTIVE)]
+
+            per_queue = defaultdict(int)
+            for t in waiting:
+                per_queue[t.queue_id] += 1
+
+            queue_waits = []
+            for qid, count in per_queue.items():
+                avg = schedule_svc.effective_avg(ticket_repo, qid, schedule)
+                queue_waits.append(count * avg)
+            avg_wait_minutes = round(sum(queue_waits) / len(queue_waits)) if queue_waits else 0
+
+            result.append({
+                **svc.to_dict(),
+                "people_waiting":   len(waiting),
+                "avg_wait_minutes": avg_wait_minutes,
+                "num_queues":       len(svc.queues),
+                "visited":          ticket_repo.has_visited(svc.id, user_email) if user_email else False,
+            })
+
+        # Show not-yet-visited services with the shortest waits first;
+        # the client can re-sort however it likes.
+        result.sort(key=lambda s: (s["visited"], s["avg_wait_minutes"]))
+
+        return jsonify({"success": True, "services": result}), 200
+
 
 # =============================================================
 # ROUTE REGISTRATION
@@ -147,5 +204,10 @@ service_bp.add_url_rule(
 service_bp.add_url_rule(
     "/services/mine",
     view_func=_controller.get_my_services,
+    methods=["GET"],
+)
+service_bp.add_url_rule(
+    "/services/browse",
+    view_func=_controller.browse_services,
     methods=["GET"],
 )

@@ -26,6 +26,10 @@ class UserRepository:
         """Find and return a User by username, or None if not found."""
         return User.query.filter_by(username=username).first()
 
+    def find_by_id(self, user_id: int) -> User | None:
+        """Find and return a User by id, or None if not found."""
+        return User.query.get(user_id)
+
     def find_by_role(self, role: str) -> list[User]:
         """Return all users matching the given role ('client' or 'admin')."""
         return User.query.filter_by(role=role).all()
@@ -55,6 +59,10 @@ class UserRepository:
         )
         db.session.add(user)
         return user
+
+    def delete(self, user: User):
+        """Delete a user from the current session. Does NOT commit."""
+        db.session.delete(user)
 
     def save(self):
         """Commit the current session transaction."""

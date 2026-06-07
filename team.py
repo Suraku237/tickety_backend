@@ -65,10 +65,17 @@ class TeamController:
         username   = user.username if user else "Unknown"
 
         try:
-            db.session.delete(admin)
+            # Delete the member's USER account outright. The Admin row (and any
+            # other service links they had) cascade-delete via the FK, so this
+            # fully removes the account from the database — not just from this
+            # service.
+            if user:
+                db.session.delete(user)
+            else:
+                db.session.delete(admin)
             db.session.commit()
             notif_svc.member_removed(service_id, username)
-            return jsonify({"success": True, "message": "Admin removed from service"}), 200
+            return jsonify({"success": True, "message": "Member account deleted"}), 200
         except Exception as e:
             db.session.rollback()
             return jsonify({"success": False, "message": str(e)}), 500

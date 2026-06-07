@@ -228,6 +228,62 @@ class AuthController:
             user_repo.rollback()
             return jsonify({"success": False, "message": str(e)}), 500
 
+    # ----------------------------------------------------------
+    # CHANGE PASSWORD                     [mobile + web]
+    # POST /api/change-password
+    # Body: { user_id, current_password, new_password }
+    # ----------------------------------------------------------
+    def change_password(self):
+        user_repo, _, _, _, password_service = self._get_deps()
+
+        data    = request.get_json() or {}
+        user_id = data.get("user_id")
+        current = data.get("current_password", "")
+        new_pw  = data.get("new_password", "")
+
+        if not user_id or not current or not new_pw:
+            return jsonify({"success": False,
+                            "message": "user_id, current_password and new_password are required"}), 400
+
+        user = user_repo.find_by_id(int(user_id))
+        if not user:
+            return jsonify({"success": False, "message": "User not found"}), 404
+
+        if not password_service.verify(current, user.password):
+            return jsonify({"success": False, "message": "Current password is incorrect"}), 403
+
+        try:
+            user.password = password_service.hash(new_pw)
+            user_repo.save()
+            return jsonify({"success": True, "message": "Password changed"}), 200
+        except Exception as e:
+            user_repo.rollback()
+            return jsonify({"success": False, "message": str(e)}), 500
+
+    # ----------------------------------------------------------
+    # DELETE ACCOUNT                      [mobile + web]
+    # POST /api/delete-account   Body: { user_id }
+    # ----------------------------------------------------------
+    def delete_account(self):
+        user_repo, _, _, _, _ = self._get_deps()
+
+        data    = request.get_json() or {}
+        user_id = data.get("user_id")
+        if not user_id:
+            return jsonify({"success": False, "message": "user_id is required"}), 400
+
+        user = user_repo.find_by_id(int(user_id))
+        if not user:
+            return jsonify({"success": False, "message": "User not found"}), 404
+
+        try:
+            user_repo.delete(user)
+            user_repo.save()
+            return jsonify({"success": True, "message": "Account deleted"}), 200
+        except Exception as e:
+            user_repo.rollback()
+            return jsonify({"success": False, "message": str(e)}), 500
+
 
 # =============================================================
 # ROUTE REGISTRATION
@@ -238,3 +294,5 @@ auth_bp.add_url_rule("/register",     view_func=_controller.register,     method
 auth_bp.add_url_rule("/verify-email", view_func=_controller.verify_email, methods=["POST"])
 auth_bp.add_url_rule("/login",        view_func=_controller.login,        methods=["POST"])
 auth_bp.add_url_rule("/resend-otp",   view_func=_controller.resend_otp,   methods=["POST"])
+auth_bp.add_url_rule("/change-password", view_func=_controller.change_password, methods=["POST"])
+auth_bp.add_url_rule("/delete-account",  view_func=_controller.delete_account,  methods=["POST"])

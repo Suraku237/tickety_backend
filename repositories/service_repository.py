@@ -18,6 +18,18 @@ class ServiceRepository:
         """Return all services owned by a given user."""
         return Service.query.filter_by(owner_id=owner_id).all()
 
+    def find_all(self) -> list[Service]:
+        """Return every service, alphabetically — for the public browse list."""
+        return Service.query.order_by(Service.name.asc()).all()
+
+    def search_by_name(self, q: str) -> list[Service]:
+        """Case-insensitive name search for the public browse list."""
+        like = f"%{q.strip()}%"
+        return (Service.query
+                .filter(Service.name.ilike(like))
+                .order_by(Service.name.asc())
+                .all())
+
     def find_by_name_and_owner(self, name: str, owner_id: int) -> Service | None:
         """Check if a user already registered a service with this exact name."""
         return Service.query.filter_by(name=name, owner_id=owner_id).first()

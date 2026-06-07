@@ -71,6 +71,37 @@ class TicketRepository:
                 )
                 .all())
 
+    def find_by_customer_identifier(self, customer_identifier: str) -> list[Ticket]:
+        """
+        Find all in-queue (non-served) tickets for a customer identifier.
+        Case-insensitive so email capitalisation differences still match.
+        Consumed by the mobile app's "my tickets" view.
+        """
+        return (Ticket.query
+                .filter(
+                    db.func.lower(Ticket.customer_identifier) ==
+                    customer_identifier.strip().lower()
+                )
+                .filter(Ticket.status != self.STATUS_SERVED)
+                .order_by(
+                    self._position_order(),
+                    Ticket.issued_at.asc()
+                )
+                .all())
+
+    def has_visited(self, service_id: int, identifier: str) -> bool:
+        """
+        True if this customer identifier has ever taken a ticket at the
+        service (any status, including served). Powers the mobile browse
+        page's visited/not-visited distinction.
+        """
+        if not identifier:
+            return False
+        return (Ticket.query
+                .filter(db.func.lower(Ticket.customer_identifier) == identifier.strip().lower())
+                .filter(Ticket.service_id == service_id)
+                .first()) is not None
+
     def find_carried_over(self, service_id: int) -> list[Ticket]:
         return (Ticket.query
                 .filter_by(service_id=service_id, status=self.STATUS_CARRIED_OVER)

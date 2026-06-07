@@ -11,6 +11,7 @@ from analytics     import analytics_bp
 from schedule      import schedule_bp
 from profile       import profile_bp
 from notifications import notifications_bp
+from swap          import swap_bp
 from scheduler     import init_scheduler
 from dotenv import load_dotenv
 
@@ -58,6 +59,7 @@ def create_app() -> Flask:
     app.register_blueprint(schedule_bp,      url_prefix="/api")
     app.register_blueprint(profile_bp,       url_prefix="/api")
     app.register_blueprint(notifications_bp, url_prefix="/api")
+    app.register_blueprint(swap_bp,          url_prefix="/api")   # merged from mobile backend
 
     # --- Background scheduler (carry-over requeue) ---
     # Guard against Werkzeug reloader spawning a second scheduler process

@@ -4,7 +4,7 @@ from repositories.queue_repository    import QueueRepository
 from repositories.schedule_repository import ScheduleRepository
 from services.schedule_service        import ScheduleService
 from services.notification_service    import NotificationService
-from datetime import date
+from datetime import date, datetime, timezone
 
 counter_bp = Blueprint("counter", __name__)
 
@@ -76,9 +76,11 @@ class CounterController:
             (t for t in all_tickets if t.status == ticket_repo.STATUS_ACTIVE and t.position == 0),
             None
         )
+        _PRIO = {'urgent': 0, 'high': 1, 'normal': 2}
         waiting   = sorted(
             [t for t in all_tickets if t.status == ticket_repo.STATUS_PENDING],
-            key=lambda x: x.position if x.position is not None else 9999
+            key=lambda x: (_PRIO.get(x.priority, 2),
+                           x.position if x.position is not None else 9999)
         )
         suspended = [t for t in all_tickets if t.status == ticket_repo.STATUS_SUSPENDED]
         warning   = self._closing_warning(ticket_repo, schedule_repo, schedule_svc, sid)
@@ -120,12 +122,13 @@ class CounterController:
                 None
             )
             if next_up:
-                next_up.status   = ticket_repo.STATUS_ACTIVE
-                next_up.position = 0
-                next_up.counter  = counter_name
+                next_up.status    = ticket_repo.STATUS_ACTIVE
+                next_up.position  = 0
+                next_up.counter   = counter_name
+                next_up.called_at = datetime.now(timezone.utc)   # for rolling-average wait stats
 
             schedule = schedule_repo.resolve_for_today(service_id)
-            avg_dur  = schedule.avg_duration if schedule else 10
+            avg_dur  = schedule_svc.effective_avg(ticket_repo, queue_id, schedule)
             schedule_svc.recalculate_queue(remaining, avg_dur)
             ticket_repo.save()
 
@@ -171,7 +174,7 @@ class CounterController:
             ticket_repo.flush()
             ticket_repo.reindex_positions(queue_id)
             schedule  = schedule_repo.resolve_for_today(service_id)
-            avg_dur   = schedule.avg_duration if schedule else 10
+            avg_dur   = schedule_svc.effective_avg(ticket_repo, queue_id, schedule)
             remaining = ticket_repo.find_by_queue(queue_id)
             schedule_svc.recalculate_queue(remaining, avg_dur)
             ticket_repo.save()
@@ -208,7 +211,7 @@ class CounterController:
             ticket_repo.flush()
 
             schedule  = schedule_repo.resolve_for_today(service_id)
-            avg_dur   = schedule.avg_duration if schedule else 10
+            avg_dur   = schedule_svc.effective_avg(ticket_repo, queue_id, schedule)
             remaining = ticket_repo.find_by_queue(queue_id)
             schedule_svc.recalculate_queue(remaining, avg_dur)
 
@@ -264,9 +267,10 @@ class CounterController:
         next_ticket = pending[0]
 
         try:
-            next_ticket.status   = ticket_repo.STATUS_ACTIVE
-            next_ticket.position = 0
-            next_ticket.counter  = counter_name
+            next_ticket.status    = ticket_repo.STATUS_ACTIVE
+            next_ticket.position  = 0
+            next_ticket.counter   = counter_name
+            next_ticket.called_at = datetime.now(timezone.utc)   # for rolling-average wait stats
             ticket_repo.reindex_positions(next_ticket.queue_id)
             schedule  = schedule_repo.resolve_for_today(sid)
             avg_dur   = schedule.avg_duration if schedule else 10

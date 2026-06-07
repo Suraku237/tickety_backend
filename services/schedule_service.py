@@ -58,6 +58,21 @@ class ScheduleService:
         return base + timedelta(minutes=position * avg_duration)
 
     # ----------------------------------------------------------
+    # EFFECTIVE AVERAGE DURATION  (auto, with manual fallback)
+    # Uses the rolling average of recent real wait times for the
+    # queue when enough served tickets exist; otherwise falls back
+    # to the boss-configured avg_duration (or 10 if unset).
+    # This is what makes the boss's manual value a *fallback* rather
+    # than the source of truth.
+    # ----------------------------------------------------------
+    def effective_avg(self, ticket_repo, queue_id: int, schedule) -> int:
+        fallback = schedule.avg_duration if schedule else 10
+        try:
+            return ticket_repo.compute_rolling_avg_duration(queue_id, fallback=fallback)
+        except Exception:
+            return fallback
+
+    # ----------------------------------------------------------
     # IS SERVICE OPEN NOW
     # ----------------------------------------------------------
     def is_open_now(self, schedule: ServiceSchedule | None) -> bool:
