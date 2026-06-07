@@ -8,6 +8,8 @@ from flask import current_app
 # Responsibilities:
 #   - Generate secure OTP codes
 #   - Send OTP emails via Brevo API
+#     * send()       → registration / email-verify flow
+#     * send_reset() → password-reset flow
 # OOP Principle: Single Responsibility, Abstraction
 # =============================================================
 class OTPService:
@@ -18,65 +20,47 @@ class OTPService:
         """Generate a cryptographically secure 6-digit OTP code."""
         return str(secrets.randbelow(10 ** self.CODE_LENGTH)).zfill(self.CODE_LENGTH)
 
+    # ----------------------------------------------------------
+    # REGISTRATION / EMAIL VERIFY  (used by register + resend)
+    # ----------------------------------------------------------
     def send(self, email: str, username: str, otp_code: str) -> bool:
         """
-        Send an OTP verification email to the user via Brevo.
+        Send an account-verification OTP email via Brevo.
         Returns True on success, False on failure.
         """
-        api_key      = current_app.config.get("BREVO_API_KEY")
-        sender_email = current_app.config.get("MAIL_DEFAULT_SENDER")
+        return self._dispatch(
+            to_email=email,
+            subject="Your TICKETY Verification Code",
+            html=self._build_email_html(username, otp_code),
+        )
 
-        payload = {
-            "sender": {"email": sender_email, "name": "TICKETY"},
-            "to": [{"email": email}],
-            "subject": "Your TICKETY Verification Code",
-            "htmlContent": self._build_email_html(username, otp_code),
-        }
-
-        headers = {
-            "accept":       "application/json",
-            "content-type": "application/json",
-            "api-key":      api_key,
-        }
-
-
-        try:
-            response = requests.post(
-                "https://api.brevo.com/v3/smtp/email",
-                json=payload,
-                headers=headers,
-            )
-            print(f"Brevo status: {response.status_code}")
-            print(f"Brevo response: {response.text}")   # ← ADD THIS
-            return response.status_code in [200, 201]
-        except requests.RequestException as e:
-                print(f"Brevo request error: {e}")           # ← ADD THIS
-                return False
-        # try:
-        #     response = requests.post(
-        #         "https://api.brevo.com/v3/smtp/email",
-        #         json=payload,
-        #         headers=headers,
-        #     )
-        #     return response.status_code in [200, 201]
-        # except requests.RequestException:
-        #     return False
-
+    # ----------------------------------------------------------
+    # PASSWORD RESET  (used by forgot-password + email-change)
+    # ----------------------------------------------------------
     def send_reset(self, email: str, username: str, otp_code: str) -> bool:
         """
-        Send a password-reset OTP email to the user via Brevo.
+        Send a password-reset OTP email via Brevo.
         Returns True on success, False on failure.
         """
+        return self._dispatch(
+            to_email=email,
+            subject="Reset Your TICKETY Password",
+            html=self._build_reset_email_html(username, otp_code),
+        )
+
+    # ----------------------------------------------------------
+    # PRIVATE: shared HTTP dispatch
+    # ----------------------------------------------------------
+    def _dispatch(self, to_email: str, subject: str, html: str) -> bool:
         api_key      = current_app.config.get("BREVO_API_KEY")
         sender_email = current_app.config.get("MAIL_DEFAULT_SENDER")
 
         payload = {
-            "sender": {"email": sender_email, "name": "TICKETY"},
-            "to": [{"email": email}],
-            "subject": "Reset Your TICKETY Password",
-            "htmlContent": self._build_reset_email_html(username, otp_code),
+            "sender":      {"email": sender_email, "name": "TICKETY"},
+            "to":          [{"email": to_email}],
+            "subject":     subject,
+            "htmlContent": html,
         }
-
         headers = {
             "accept":       "application/json",
             "content-type": "application/json",
@@ -89,15 +73,58 @@ class OTPService:
                 json=payload,
                 headers=headers,
             )
-            print(f"Brevo reset status: {response.status_code}")
-            print(f"Brevo reset response: {response.text}")
+            print(f"Brevo [{subject}] status: {response.status_code}")
+            print(f"Brevo [{subject}] response: {response.text}")
             return response.status_code in [200, 201]
         except requests.RequestException as e:
-            print(f"Brevo reset request error: {e}")
+            print(f"Brevo request error: {e}")
             return False
 
+    # ----------------------------------------------------------
+    # PRIVATE: email HTML builders
+    # ----------------------------------------------------------
+    def _build_email_html(self, username: str, otp_code: str) -> str:
+        """HTML body for the account-verification OTP email."""
+        return f"""
+        <html>
+            <body style="font-family: Arial, sans-serif; background:#0D0D0D;
+                         color:#F5F5F5; padding:40px;">
+                <div style="max-width:480px; margin:auto; background:#161616;
+                            border-radius:16px; padding:40px;
+                            border:1px solid #2A2A2A;">
+                    <div style="display:flex; align-items:center; margin-bottom:32px;">
+                        <div style="background:#DC0F0F; border-radius:10px;
+                                    padding:10px; margin-right:12px;">
+                            🎟
+                        </div>
+                        <span style="font-size:20px; font-weight:900;
+                                     letter-spacing:4px;">TICKETY</span>
+                    </div>
+                    <h2 style="margin:0 0 8px; font-size:24px;">
+                        Welcome, {username}!
+                    </h2>
+                    <p style="color:#808080; margin:0 0 32px;">
+                        Use the code below to verify your account.
+                        It expires in <strong style="color:#F5F5F5;">10 minutes</strong>.
+                    </p>
+                    <div style="background:#0D0D0D; border:2px solid #DC0F0F;
+                                border-radius:12px; padding:24px;
+                                text-align:center; font-size:36px;
+                                font-weight:900; letter-spacing:10px;
+                                color:#DC0F0F;">
+                        {otp_code}
+                    </div>
+                    <p style="color:#444; font-size:12px; margin-top:24px;
+                              text-align:center;">
+                        If you did not create a TICKETY account, ignore this email.
+                    </p>
+                </div>
+            </body>
+        </html>
+        """
+
     def _build_reset_email_html(self, username: str, otp_code: str) -> str:
-        """Build and return the HTML body for the password-reset OTP email."""
+        """HTML body for the password-reset OTP email."""
         return f"""
         <html>
             <body style="font-family: Arial, sans-serif; background:#0D0D0D;
@@ -131,46 +158,6 @@ class OTPService:
                               text-align:center;">
                         If you did not request a password reset, ignore this email.
                         Your password will not change.
-                    </p>
-                </div>
-            </body>
-        </html>
-        """
-
-
-        """Build and return the HTML body for the OTP email."""
-        return f"""
-        <html>
-            <body style="font-family: Arial, sans-serif; background:#0D0D0D;
-                         color:#F5F5F5; padding:40px;">
-                <div style="max-width:480px; margin:auto; background:#161616;
-                            border-radius:16px; padding:40px;
-                            border:1px solid #2A2A2A;">
-                    <div style="display:flex; align-items:center; margin-bottom:32px;">
-                        <div style="background:#DC0F0F; border-radius:10px;
-                                    padding:10px; margin-right:12px;">
-                            🎟
-                        </div>
-                        <span style="font-size:20px; font-weight:900;
-                                     letter-spacing:4px;">TICKETY</span>
-                    </div>
-                    <h2 style="margin:0 0 8px; font-size:24px;">
-                        Welcome, {username}!
-                    </h2>
-                    <p style="color:#808080; margin:0 0 32px;">
-                        Use the code below to verify your account.
-                        It expires in <strong style="color:#F5F5F5;">10 minutes</strong>.
-                    </p>
-                    <div style="background:#0D0D0D; border:2px solid #DC0F0F;
-                                border-radius:12px; padding:24px;
-                                text-align:center; font-size:36px;
-                                font-weight:900; letter-spacing:10px;
-                                color:#DC0F0F;">
-                        {otp_code}
-                    </div>
-                    <p style="color:#444; font-size:12px; margin-top:24px;
-                              text-align:center;">
-                        If you did not create a TICKETY account, ignore this email.
                     </p>
                 </div>
             </body>
