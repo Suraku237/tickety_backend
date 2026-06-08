@@ -27,5 +27,8 @@ tzlocal==5.2
 python-dotenv==1.2.1
 requests==2.32.5
 
+# --- Push notifications (#8) — optional; only needed if FCM is configured ---
+google-auth==2.35.0
+
 # --- Production WSGI server ---
 gunicorn==23.0.0

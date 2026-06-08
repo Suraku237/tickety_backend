@@ -365,6 +365,32 @@ class Notification(db.Model):
         return f"<Notification service_id={self.service_id} type={self.type} read={self.read}>"
 
 # =============================================================
+# DEVICE TOKEN MODEL  (#8 — push notifications)
+# Stores a user's FCM device tokens so the backend can push
+# system notifications (ticket called, swap request) even when
+# the app is closed.
+# =============================================================
+class DeviceToken(db.Model):
+    __tablename__ = 'device_tokens'
+
+    id         = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    user_id    = db.Column(db.Integer, db.ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    token      = db.Column(db.String(255), unique=True, nullable=False)   # FCM registration token
+    platform   = db.Column(db.String(20),  nullable=True)                 # android | ios | web
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    def to_dict(self):
+        return {
+            "id":       str(self.id),
+            "user_id":  str(self.user_id),
+            "platform": self.platform,
+        }
+
+    def __repr__(self):
+        return f"<DeviceToken user_id={self.user_id} platform={self.platform}>"
+
+
+# =============================================================
 # SWAP REQUEST MODEL  (merged from mobile backend)
 # Responsibilities:
 #   - Represent a request by one ticket holder to swap queue

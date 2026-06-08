@@ -70,6 +70,7 @@ class SwapController:
                 ticket_repo.STATUS_ACTIVE,
             ]))
             .filter(Ticket.id != requester.id)
+            .filter(Ticket.customer_identifier != None)   # real customer tickets only
             .filter(db.or_(Ticket.status != ticket_repo.STATUS_ACTIVE,
                            Ticket.position != 0))
             .order_by(Ticket.position.asc())
@@ -186,6 +187,20 @@ class SwapController:
             )
             db.session.add(swap)
             db.session.commit()
+
+            # #8 — notify the target user's phone about the incoming request.
+            try:
+                from services.push_service import PushService
+                if target.customer_identifier:
+                    PushService().send_to_email(
+                        target.customer_identifier,
+                        "Swap request",
+                        f"Someone with ticket {requester.code} wants to swap places with you.",
+                        {"type": "swap_request", "swap_id": str(swap.id),
+                         "target_ticket_id": str(target.id)},
+                    )
+            except Exception:
+                pass  # best-effort
 
             return jsonify({
                 "success":      True,
@@ -333,20 +348,19 @@ class SwapController:
                     "message": "One or both tickets are no longer in a swappable state",
                 }), 400
 
-            # Atomically swap positions
-            requester.position, target.position = target.position, requester.position
+            # Exchange OWNERSHIP of the two tickets (not their positions).
+            # After this, the requester holds the target's ticket (its code
+            # and position) and vice-versa — i.e. they trade places by trading
+            # tickets, which is what each user sees in "my tickets".
+            requester.customer_identifier, target.customer_identifier = (
+                target.customer_identifier, requester.customer_identifier
+            )
 
-            # Recalculate ETAs for the service
-            service_id = requester.service_id
-            schedule   = schedule_repo.resolve_for_today(service_id)
-
-            # Both tickets are in the same queue now; recalc that queue
-            # using the rolling-average duration.
-            affected_queue_ids = {requester.queue_id, target.queue_id}
-            for qid in affected_queue_ids:
-                avg_dur       = schedule_svc.effective_avg(ticket_repo, qid, schedule)
-                queue_tickets = ticket_repo.find_by_queue(qid)
-                schedule_svc.recalculate_queue(queue_tickets, avg_dur)
+            # Positions are unchanged, so ETAs per position stay valid; just
+            # refresh estimates for the queue to be safe.
+            schedule = schedule_repo.resolve_for_today(requester.service_id)
+            avg_dur  = schedule_svc.effective_avg(ticket_repo, requester.queue_id, schedule)
+            schedule_svc.recalculate_queue(ticket_repo.find_by_queue(requester.queue_id), avg_dur)
 
             # Mark this request accepted
             swap.status       = SwapRequest.STATUS_ACCEPTED
@@ -376,7 +390,7 @@ class SwapController:
 
             return jsonify({
                 "success":      True,
-                "message":      "Swap accepted! Positions have been exchanged.",
+                "message":      "Swap accepted! You now hold the other ticket.",
                 "swap_request": swap.to_dict(),
                 "requester":    requester.to_dict(),
                 "target":       target.to_dict(),

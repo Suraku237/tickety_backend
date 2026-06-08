@@ -194,8 +194,38 @@ class ServiceController:
 # =============================================================
 # ROUTE REGISTRATION
 # =============================================================
-_controller = ServiceController()
+    # ----------------------------------------------------------
+    # DELETE SERVICE  (#6 — boss only)
+    # DELETE /api/services/<service_id>   Body/query: { user_id }
+    # Deletes the service and everything under it (queues, tickets,
+    # team admins, schedules, notifications, swaps) via FK cascade.
+    # ----------------------------------------------------------
+    def delete_service(self, service_id):
+        user_repo, service_repo, admin_repo = self._get_deps()
+        data    = request.get_json(silent=True) or {}
+        user_id = data.get("user_id") or request.args.get("user_id")
 
+        if not user_id:
+            return jsonify({"success": False, "message": "user_id is required"}), 400
+
+        service = service_repo.find_by_id(int(service_id))
+        if not service:
+            return jsonify({"success": False, "message": "Service not found"}), 404
+        if service.owner_id != int(user_id):
+            return jsonify({"success": False, "message": "Only the service owner can delete it"}), 403
+
+        try:
+            from models import db
+            db.session.delete(service)   # cascades to all child rows
+            db.session.commit()
+            return jsonify({"success": True, "message": "Service deleted"}), 200
+        except Exception as e:
+            from models import db
+            db.session.rollback()
+            return jsonify({"success": False, "message": str(e)}), 500
+
+
+_controller = ServiceController()
 service_bp.add_url_rule(
     "/services",
     view_func=_controller.create_service,
@@ -210,4 +240,9 @@ service_bp.add_url_rule(
     "/services/browse",
     view_func=_controller.browse_services,
     methods=["GET"],
+)
+service_bp.add_url_rule(
+    "/services/<service_id>",
+    view_func=_controller.delete_service,
+    methods=["DELETE"],
 )

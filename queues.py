@@ -90,7 +90,7 @@ class QueueController:
     # more naturally as "active", so we translate for DISPLAY only
     # without ever mutating the stored value.
     # ----------------------------------------------------------
-    def _enrich_for_user(self, ticket, ticket_repo):
+    def _enrich_for_user(self, ticket, ticket_repo, schedule_svc=None, schedule_repo=None):
         queue          = ticket.queue
         queue_tickets  = ticket_repo.find_by_queue(queue.id) if queue else []
         total_in_queue = len([t for t in queue_tickets if t.position is not None])
@@ -100,19 +100,48 @@ class QueueController:
             and ticket.position is not None
             and t.position < ticket.position
         ])
-        estimated_minutes = 0
-        if ticket.estimated_serve_at:
-            diff = ticket.estimated_serve_at - datetime.now(ticket.estimated_serve_at.tzinfo)
-            estimated_minutes = max(0, int(diff.total_seconds() / 60))
+
+        # Estimated wait = (slots ahead) x (average service time per ticket).
+        # Slots ahead is the ticket's own position (0 = at the counter); we
+        # fall back to the counted people_ahead only when position is unset
+        # (e.g. carried-over tickets). This is timezone-proof — it never
+        # depends on comparing a stored UTC timestamp against "now".
+        avg = 10
+        if schedule_svc is not None and queue is not None:
+            schedule = schedule_repo.resolve_for_today(ticket.service_id) if schedule_repo else None
+            avg = schedule_svc.effective_avg(ticket_repo, queue.id, schedule)
+        slots_ahead = ticket.position if ticket.position is not None else people_ahead
+        estimated_minutes = max(0, slots_ahead) * avg
+
+        # Carried-over tickets have no meaningful serve time until the service
+        # re-opens — surface null so clients can hide it (#5).
+        if ticket.status == "carried_over":
+            estimated_minutes = None
+
+        # Authoritative "called" flag from the REAL stored status (before the
+        # pending->active display coercion below). A ticket is "called" once an
+        # agent has it at the counter (status active) — detected by status, not
+        # position, so reindexing the waiting line can't suppress it.
+        called = (ticket.status == "active")
+
+        # Counter / serving info for the client.
+        #   counter_name      = the counter THIS ticket was called to (e.g. "A")
+        #   currently_serving = the code of the ticket being served right now in
+        #                       this queue (so a waiting customer sees how close
+        #                       they are), or "" if nobody is being served.
+        active_in_queue = next((t for t in queue_tickets if t.status == "active"), None)
+        serving_code    = active_in_queue.code if active_in_queue else ""
 
         return {
             **ticket.to_dict(),
             "status":            "active" if ticket.status == "pending" else ticket.status,
+            "called":            called,
             "service_name":      queue.name if queue else "",
             "service_category":  (queue.service.name if queue and queue.service
                                   else queue.code if queue else ""),
+            "counter_name":      ticket.counter or "",
             "guichet_number":    int(ticket.counter) if ticket.counter and ticket.counter.isdigit() else 0,
-            "currently_serving": ticket.counter or "",
+            "currently_serving": serving_code,
             "estimated_minutes": estimated_minutes,
             "people_ahead":      people_ahead,
             "total_in_queue":    total_in_queue,
@@ -237,7 +266,7 @@ class QueueController:
         # was stored or sent.
         user_email = user_email.strip().lower()
         tickets    = d.ticket_repo.find_by_customer_identifier(user_email)
-        result     = [self._enrich_for_user(t, d.ticket_repo) for t in tickets]
+        result     = [self._enrich_for_user(t, d.ticket_repo, d.schedule_svc, d.schedule_repo) for t in tickets]
         return jsonify({"success": True, "tickets": result}), 200
 
     # ----------------------------------------------------------
@@ -249,7 +278,7 @@ class QueueController:
         ticket = d.ticket_repo.find_by_id(int(ticket_id))
         if not ticket:
             return jsonify({"success": False, "message": "Ticket not found"}), 404
-        return jsonify({"success": True, "ticket": self._enrich_for_user(ticket, d.ticket_repo)}), 200
+        return jsonify({"success": True, "ticket": self._enrich_for_user(ticket, d.ticket_repo, d.schedule_svc, d.schedule_repo)}), 200
 
     # ----------------------------------------------------------
     # ISSUE TICKET (manual / printed)     [web]
@@ -380,6 +409,15 @@ class QueueController:
             return jsonify({"success": False, "message": "Ticket not found"}), 404
         try:
             ticket.priority = priority
+            # Priority now drives the waiting-line order, so re-number the
+            # queue and recompute every estimate. This is why changing a
+            # ticket to high/urgent immediately shortens its wait (and pushes
+            # others' out) on the client card, queue manage, and counter.
+            d.ticket_repo.reindex_positions(ticket.queue_id)
+            schedule  = d.schedule_repo.resolve_for_today(ticket.service_id)
+            avg_dur   = d.schedule_svc.effective_avg(d.ticket_repo, ticket.queue_id, schedule)
+            remaining = d.ticket_repo.find_by_queue(ticket.queue_id)
+            d.schedule_svc.recalculate_queue(remaining, avg_dur)
             d.ticket_repo.save()
             return jsonify({"success": True, "ticket": ticket.to_dict()}), 200
         except Exception as e:

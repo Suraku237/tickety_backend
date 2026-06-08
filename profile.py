@@ -284,6 +284,63 @@ class ProfileController:
             user_repo.rollback()
             return jsonify({"success": False, "message": str(e)}), 500
 
+    # ----------------------------------------------------------
+    # PUSH HEALTH (#8 — is push working?)
+    # GET /api/push/health?probe=1&user_id=<id>
+    #   probe=1 actually contacts Google to mint a token (real test)
+    # ----------------------------------------------------------
+    def push_health(self):
+        from services.push_service import PushService
+        from models import DeviceToken
+        svc   = PushService()
+        probe = request.args.get("probe") == "1"
+        info  = svc.probe() if probe else svc.health()
+
+        try:
+            info["device_tokens"] = DeviceToken.query.count()
+            uid = request.args.get("user_id")
+            if uid:
+                info["my_device_tokens"] = DeviceToken.query.filter_by(user_id=int(uid)).count()
+        except Exception:
+            info["device_tokens"] = None
+
+        if probe:
+            info["status"] = ("working"      if info.get("token_ok")
+                              else "misconfigured" if info["enabled"]
+                              else "not_configured")
+        else:
+            info["status"] = "configured" if info["enabled"] else "not_configured"
+
+        return jsonify({"success": True, **info}), 200
+
+    # ----------------------------------------------------------
+    # REGISTER DEVICE TOKEN (#8 push)
+    # POST /api/profile/device-token  Body: { user_id, token, platform }
+    # Upserts an FCM token so the backend can push to this device.
+    # ----------------------------------------------------------
+    def register_device_token(self):
+        from models import DeviceToken, db
+        data     = request.get_json() or {}
+        user_id  = data.get("user_id")
+        token    = (data.get("token") or "").strip()
+        platform = (data.get("platform") or "").strip() or None
+
+        if not user_id or not token:
+            return jsonify({"success": False, "message": "user_id and token are required"}), 400
+
+        try:
+            existing = DeviceToken.query.filter_by(token=token).first()
+            if existing:
+                existing.user_id  = int(user_id)
+                existing.platform = platform
+            else:
+                db.session.add(DeviceToken(user_id=int(user_id), token=token, platform=platform))
+            db.session.commit()
+            return jsonify({"success": True, "message": "Device registered"}), 200
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"success": False, "message": str(e)}), 500
+
 
 # =============================================================
 # ROUTE REGISTRATION
@@ -295,3 +352,5 @@ profile_bp.add_url_rule("/profile/email/initiate",     view_func=_controller.ini
 profile_bp.add_url_rule("/profile/email/confirm-old",  view_func=_controller.confirm_old_email,    methods=["POST"])
 profile_bp.add_url_rule("/profile/email/confirm-new",  view_func=_controller.confirm_new_email,    methods=["POST"])
 profile_bp.add_url_rule("/profile/password",           view_func=_controller.update_password,      methods=["PATCH"])
+profile_bp.add_url_rule("/profile/device-token",       view_func=_controller.register_device_token,methods=["POST"])
+profile_bp.add_url_rule("/push/health",                view_func=_controller.push_health,          methods=["GET"])

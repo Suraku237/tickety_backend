@@ -27,7 +27,7 @@ class TicketRepository:
 
     # Minimum number of real served tickets required before we
     # trust the rolling average over the manually configured value.
-    ROLLING_AVG_MIN_SAMPLES = 5
+    ROLLING_AVG_MIN_SAMPLES = 1
 
     # How many recent served tickets to include in the rolling average.
     # Keeps the estimate responsive to recent pace changes rather than
@@ -151,21 +151,26 @@ class TicketRepository:
 
     def reindex_positions(self, queue_id: int):
         """
-        Re-assign sequential positions to all pending/active tickets.
+        Re-assign sequential positions to the PENDING (waiting) tickets of a
+        queue, ordered by priority (urgent > high > normal) then arrival time.
+
+        Active/serving tickets are intentionally excluded — they're at the
+        counter, not in the waiting line, so they must never be renumbered
+        (doing so used to bump a just-called ticket off position 0 and make it
+        vanish from the counter view). Position therefore always equals "how
+        many people are ahead of you in line", which keeps the estimated wait
+        and the call order consistent with what priority dictates.
         Does NOT commit.
         """
+        PRIO = {'urgent': 0, 'high': 1, 'normal': 2}
+        from datetime import datetime as _dt
         tickets = (Ticket.query
-                   .filter_by(queue_id=queue_id)
-                   .filter(Ticket.status.in_([
-                       self.STATUS_PENDING,
-                       self.STATUS_ACTIVE,
-                   ]))
-                   .filter(Ticket.position != None)
-                   .order_by(
-                       self._position_order(),
-                       Ticket.issued_at.asc()
-                   )
+                   .filter_by(queue_id=queue_id, status=self.STATUS_PENDING)
                    .all())
+        tickets.sort(key=lambda t: (
+            PRIO.get(t.priority, 2),
+            t.issued_at or _dt.min,
+        ))
         for i, t in enumerate(tickets):
             t.position = i
 

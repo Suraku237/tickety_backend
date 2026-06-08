@@ -284,6 +284,124 @@ class AuthController:
             user_repo.rollback()
             return jsonify({"success": False, "message": str(e)}), 500
 
+    # ----------------------------------------------------------
+    # FORGOT PASSWORD  (Step 1 of 3)
+    # POST /api/forgot-password
+    # Body: { email }
+    # Checks the email exists, generates a ResetCode, sends it.
+    # ----------------------------------------------------------
+    def forgot_password(self):
+        user_repo, otp_repo, otp_service, _, _ = self._get_deps()
+
+        data  = request.get_json() or {}
+        email = data.get("email", "").lower().strip()
+
+        if not email:
+            return jsonify({"success": False, "message": "Email is required"}), 400
+
+        user = user_repo.find_by_email(email)
+        if not user:
+            # Return success to avoid email enumeration
+            return jsonify({
+                "success": True,
+                "message": "If this email is registered, a reset code has been sent",
+            }), 200
+
+        try:
+            otp_code = otp_service.generate()
+            otp_repo.upsert_reset(email=email, code=otp_code)
+
+            sent = otp_service.send_reset(email, user.username, otp_code)
+            if not sent:
+                raise Exception("Failed to send reset email")
+
+            user_repo.save()
+            return jsonify({
+                "success": True,
+                "message": "Reset code sent to your email",
+            }), 200
+
+        except Exception as e:
+            user_repo.rollback()
+            return jsonify({"success": False, "message": str(e)}), 500
+
+    # ----------------------------------------------------------
+    # VERIFY RESET CODE  (Step 2 of 3)
+    # POST /api/verify-reset-code
+    # Body: { email, code }
+    # Validates the code; on success returns a one-time token
+    # the client passes to /reset-password.
+    # ----------------------------------------------------------
+    def verify_reset_code(self):
+        user_repo, otp_repo, _, _, _ = self._get_deps()
+
+        data      = request.get_json() or {}
+        email     = data.get("email", "").lower().strip()
+        user_code = data.get("code",  "").strip()
+
+        if not email or not user_code:
+            return jsonify({"success": False, "message": "email and code are required"}), 400
+
+        reset = otp_repo.find_reset_by_email_and_code(email, user_code)
+        if not reset:
+            return jsonify({"success": False, "message": "Invalid reset code"}), 400
+
+        if reset.is_expired():
+            return jsonify({"success": False, "message": "Reset code has expired"}), 400
+
+        return jsonify({
+            "success": True,
+            "message": "Code verified",
+            "email":   email,
+        }), 200
+
+    # ----------------------------------------------------------
+    # RESET PASSWORD  (Step 3 of 3)
+    # POST /api/reset-password
+    # Body: { email, code, new_password }
+    # Re-validates code, hashes + saves the new password,
+    # deletes the reset record.
+    # ----------------------------------------------------------
+    def reset_password(self):
+        user_repo, otp_repo, _, _, password_service = self._get_deps()
+
+        data         = request.get_json() or {}
+        email        = data.get("email",        "").lower().strip()
+        user_code    = data.get("code",         "").strip()
+        new_password = data.get("new_password", "")
+
+        if not email or not user_code or not new_password:
+            return jsonify({
+                "success": False,
+                "message": "email, code and new_password are required",
+            }), 400
+
+        if len(new_password) < 6:
+            return jsonify({
+                "success": False,
+                "message": "Password must be at least 6 characters",
+            }), 400
+
+        reset = otp_repo.find_reset_by_email_and_code(email, user_code)
+        if not reset:
+            return jsonify({"success": False, "message": "Invalid or expired reset code"}), 400
+
+        if reset.is_expired():
+            return jsonify({"success": False, "message": "Reset code has expired"}), 400
+
+        user = user_repo.find_by_email(email)
+        if not user:
+            return jsonify({"success": False, "message": "User not found"}), 404
+
+        try:
+            user.password = password_service.hash(new_password)
+            otp_repo.delete_reset(reset)
+            user_repo.save()
+            return jsonify({"success": True, "message": "Password reset successfully"}), 200
+        except Exception as e:
+            user_repo.rollback()
+            return jsonify({"success": False, "message": str(e)}), 500
+
 
 # =============================================================
 # ROUTE REGISTRATION
@@ -296,3 +414,6 @@ auth_bp.add_url_rule("/login",        view_func=_controller.login,        method
 auth_bp.add_url_rule("/resend-otp",   view_func=_controller.resend_otp,   methods=["POST"])
 auth_bp.add_url_rule("/change-password", view_func=_controller.change_password, methods=["POST"])
 auth_bp.add_url_rule("/delete-account",  view_func=_controller.delete_account,  methods=["POST"])
+auth_bp.add_url_rule("/forgot-password",   view_func=_controller.forgot_password,   methods=["POST"])
+auth_bp.add_url_rule("/verify-reset-code", view_func=_controller.verify_reset_code, methods=["POST"])
+auth_bp.add_url_rule("/reset-password",    view_func=_controller.reset_password,    methods=["POST"])

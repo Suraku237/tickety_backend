@@ -72,10 +72,15 @@ class CounterController:
             d['queue_name'] = queue_cache.get(t.queue_id, '—')
             return d
 
-        serving   = next(
-            (t for t in all_tickets if t.status == ticket_repo.STATUS_ACTIVE and t.position == 0),
-            None
-        )
+        # "Serving" = the ticket currently at the counter, identified by its
+        # real status (active) — NOT by position == 0. Relying on position
+        # used to make a just-called ticket disappear whenever the waiting
+        # line was reindexed. If more than one is active, prefer the most
+        # recently called.
+        active = [t for t in all_tickets if t.status == ticket_repo.STATUS_ACTIVE]
+        from datetime import datetime as _dt
+        active.sort(key=lambda t: (t.called_at or t.issued_at or _dt.min), reverse=True)
+        serving = active[0] if active else None
         _PRIO = {'urgent': 0, 'high': 1, 'normal': 2}
         waiting   = sorted(
             [t for t in all_tickets if t.status == ticket_repo.STATUS_PENDING],
@@ -277,6 +282,22 @@ class CounterController:
             remaining = ticket_repo.find_by_service(sid)
             schedule_svc.recalculate_queue(remaining, avg_dur)
             ticket_repo.save()
+
+            # #8 — push a system notification to the customer's phone, so they
+            # learn they've been called even if the app is closed.
+            try:
+                from services.push_service import PushService
+                if next_ticket.customer_identifier:
+                    where = f"Counter {counter_name}" if counter_name else "the counter"
+                    PushService().send_to_email(
+                        next_ticket.customer_identifier,
+                        "It's your turn!",
+                        f"Ticket {next_ticket.code} — please go to {where}.",
+                        {"type": "called", "ticket_id": str(next_ticket.id),
+                         "counter": counter_name or ""},
+                    )
+            except Exception:
+                pass  # push is best-effort; never block the call
 
             warning = self._closing_warning(ticket_repo, schedule_repo, schedule_svc, sid)
             q = queue_repo.find_by_id(next_ticket.queue_id)
