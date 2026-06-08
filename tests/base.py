@@ -44,6 +44,11 @@ from models import (  # noqa: E402
 class BaseBackendTest(unittest.TestCase):
     """Foundation for every backend test: isolated app + fresh schema."""
 
+    # Class-level counter ensures unique usernames/emails across every
+    # make_user() call within a test session, preventing UNIQUE constraint
+    # violations when multiple users are created with default values.
+    _user_counter = 0
+
     def setUp(self) -> None:
         self.app = Flask(__name__)
         self.app.config.update(
@@ -68,8 +73,12 @@ class BaseBackendTest(unittest.TestCase):
     # ------------------------------------------------------------------ #
     # Object-graph factory helpers (use the REAL model field names)       #
     # ------------------------------------------------------------------ #
-    def make_user(self, *, username="alice", email="alice@example.com",
+    def make_user(self, *, username=None, email=None,
                   password=b"hashed-bytes", role="client", verified=False) -> User:
+        BaseBackendTest._user_counter += 1
+        n = BaseBackendTest._user_counter
+        username = username if username is not None else f"user{n}"
+        email = email if email is not None else f"user{n}@example.com"
         user = User(username=username, email=email, password=password,
                     role=role, verified=verified)
         db.session.add(user)
