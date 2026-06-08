@@ -1,5 +1,0 @@
-# Test-only dependencies for the Tickety Flask backend
-pytest>=8.0
-pytest-cov>=5.0
-# Your app's own runtime deps (Flask, SQLAlchemy, bcrypt, etc.) are assumed
-# to be installed from the main requirements.txt.

@@ -1,0 +1,4 @@
+# Test-only dependencies. Your app's runtime deps (Flask, Flask-SQLAlchemy,
+# bcrypt, requests, python-dotenv, APScheduler, ...) come from requirements.txt.
+pytest>=8.0
+pytest-cov>=5.0
