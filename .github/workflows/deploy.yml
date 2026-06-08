@@ -6,8 +6,37 @@ on:
       - main
 
 jobs:
+  # ── 1. Tests run on the GitHub runner first ───────────────────────────────
+  test:
+    name: Run Backend Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'   # match your VPS Python version
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
+
+      - name: Run pytest
+        # Tests use in-memory SQLite, so no DB service is needed here.
+        # To TEMPORARILY let deploys through while you adapt the tests,
+        # uncomment the next line (NOT recommended long-term):
+        # continue-on-error: true
+        run: pytest --cov=. --tb=short
+
+  # ── 2. Deploy only after tests pass ───────────────────────────────────────
   deploy:
     name: Build and Deploy
+    needs: test            # <-- gate: requires the `test` job to succeed
     runs-on: ubuntu-latest
 
     steps:
