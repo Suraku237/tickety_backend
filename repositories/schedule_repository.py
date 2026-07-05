@@ -1,5 +1,6 @@
 from models import db, ServiceSchedule
 from datetime import datetime, timezone, time
+from services.local_clock import LocalClock
 
 
 # =============================================================
@@ -9,8 +10,16 @@ from datetime import datetime, timezone, time
 #   - Resolve the effective schedule for a given day
 #     (specific day override takes priority over general)
 # OOP Principle: Single Responsibility, Encapsulation
+#
+# TIMEZONE NOTE:
+#   "Today" is resolved in the business's LOCAL timezone via
+#   LocalClock — otherwise, between local midnight and the UTC
+#   midnight, the previous day's override would wrongly apply.
 # =============================================================
 class ScheduleRepository:
+
+    def __init__(self, clock: LocalClock | None = None):
+        self._clock = clock or LocalClock()
 
     def find_general(self, service_id: int) -> ServiceSchedule | None:
         """Return the general (day_of_week=NULL) schedule row."""
@@ -45,11 +54,11 @@ class ScheduleRepository:
 
     def resolve_for_today(self, service_id: int) -> ServiceSchedule | None:
         """
-        Return the effective schedule for today.
+        Return the effective schedule for today (business-local day).
         A specific day override takes priority over the general row.
         day_of_week: 0=Mon … 6=Sun  (matches Python's datetime.weekday())
         """
-        today    = datetime.now(timezone.utc).weekday()
+        today    = self._clock.local_weekday()
         override = self.find_by_day(service_id, today)
         if override:
             return override

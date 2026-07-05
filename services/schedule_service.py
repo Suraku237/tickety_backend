@@ -1,5 +1,6 @@
 from datetime import datetime, timezone, timedelta
-from models import Ticket, ServiceSchedule
+from models import Ticket, ServiceSchedule, ApiTimestamp
+from services.local_clock import LocalClock
 
 
 # =============================================================
@@ -9,16 +10,15 @@ from models import Ticket, ServiceSchedule
 #   - Determine if the service is currently open
 #   - Check if a ticket's estimated time exceeds closing time
 #   - Provide closing time warning data for the frontend popup
-# OOP Principle: Single Responsibility, Abstraction
+# OOP Principle: Single Responsibility, Abstraction — timezone
+#   questions are delegated to the LocalClock collaborator.
 #
 # NOTE ON DATETIME CONVENTION:
-#   All datetimes are stored and compared as naive UTC.
-#   MySQL/SQLite strip timezone info on DATETIME columns, so
-#   estimated_serve_at always comes back from the DB as naive.
-#   To avoid offset-naive vs offset-aware TypeError, this service
-#   never attaches tzinfo to datetimes used in comparisons or
-#   stored on model fields. datetime.utcnow() is used instead of
-#   datetime.now(timezone.utc) everywhere for consistency.
+#   All datetimes are STORED as naive UTC (MySQL strips tzinfo).
+#   Schedule opening/closing times are ENTERED by the boss in the
+#   business's LOCAL timezone. The LocalClock converts between the
+#   two frames so that a closing time of 10:00 actually closes the
+#   service at 10:00 local — not one hour later.
 # =============================================================
 
 def _utcnow() -> datetime:
@@ -34,6 +34,11 @@ def _strip_tz(dt: datetime | None) -> datetime | None:
 
 
 class ScheduleService:
+
+    def __init__(self, clock: LocalClock | None = None):
+        # Dependency injection with a sensible default — tests can pass
+        # a LocalClock(offset_minutes=...) to pin the timezone.
+        self._clock = clock or LocalClock()
 
     # ----------------------------------------------------------
     # COMPUTE ESTIMATED SERVE TIME
@@ -74,6 +79,8 @@ class ScheduleService:
 
     # ----------------------------------------------------------
     # IS SERVICE OPEN NOW
+    # Opening/closing are LOCAL wall-clock times, so the comparison
+    # uses the LOCAL current time (this is the 1-hour-late fix).
     # ----------------------------------------------------------
     def is_open_now(self, schedule: ServiceSchedule | None) -> bool:
         """
@@ -84,11 +91,14 @@ class ScheduleService:
         if not schedule or not schedule.is_open:
             return False
 
-        now_time = _utcnow().time()
-        return schedule.opening_time <= now_time <= schedule.closing_time
+        now_local = self._clock.local_time()
+        return schedule.opening_time <= now_local <= schedule.closing_time
 
     # ----------------------------------------------------------
     # EXCEEDS CLOSING TIME
+    # estimated_serve_at is stored in UTC; closing_time is local.
+    # Convert today's local closing moment to UTC, then compare
+    # in a single (UTC) frame.
     # ----------------------------------------------------------
     def exceeds_closing_time(
         self,
@@ -99,7 +109,6 @@ class ScheduleService:
         Return True if the estimated serve time is at or after
         today's closing time — meaning the ticket should be
         carried over to the next working day.
-        Both datetimes are compared as naive UTC.
         """
         if not schedule or not schedule.is_open:
             return False
@@ -107,11 +116,11 @@ class ScheduleService:
         if estimated_serve_at is None:
             return False
 
-        today      = _utcnow().date()
-        closing_dt = datetime.combine(today, schedule.closing_time)  # naive
-        est        = _strip_tz(estimated_serve_at)
+        closing_local = datetime.combine(self._clock.local_today(), schedule.closing_time)
+        closing_utc   = self._clock.local_to_utc(closing_local)
+        est           = _strip_tz(estimated_serve_at)   # stored naive UTC
 
-        return est >= closing_dt
+        return est >= closing_utc
 
     # ----------------------------------------------------------
     # CLOSING TIME WARNING PAYLOAD
@@ -133,22 +142,19 @@ class ScheduleService:
         if not schedule:
             return {"warning": False}
 
-        today      = _utcnow().date()
-        closing_dt = datetime.combine(today, schedule.closing_time)  # naive
+        closing_local = datetime.combine(self._clock.local_today(), schedule.closing_time)
+        closing_utc   = self._clock.local_to_utc(closing_local)
 
         return {
             "warning":          len(tickets_exceeding) > 0,
             "closing_time":     str(schedule.closing_time),
-            "closing_dt":       closing_dt.isoformat(),
+            "closing_dt":       ApiTimestamp.to_iso(closing_utc),
             "affected_count":   len(tickets_exceeding),
             "affected_tickets": [
                 {
                     "ticket_id":           str(t.id),
                     "code":                t.code,
-                    "estimated_serve_at":  (
-                        _strip_tz(t.estimated_serve_at).isoformat()
-                        if t.estimated_serve_at else None
-                    ),
+                    "estimated_serve_at":  ApiTimestamp.to_iso(_strip_tz(t.estimated_serve_at)),
                     "customer_identifier": t.customer_identifier,
                 }
                 for t in tickets_exceeding
