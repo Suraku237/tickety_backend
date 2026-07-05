@@ -6,6 +6,36 @@ db = SQLAlchemy()
 
 
 # =============================================================
+# API TIMESTAMP  (timezone fix)
+# Responsibilities:
+#   - Encapsulate the API datetime wire convention in ONE place
+#   - Storage convention : naive UTC in MySQL DATETIME columns
+#   - Wire convention    : ISO-8601 with an explicit UTC marker "Z"
+#
+# WHY THIS EXISTS:
+#   A naive isoformat() like "2026-06-20T09:01:35" carries no
+#   timezone, so browsers (new Date) and Dart (DateTime.parse)
+#   interpret it as LOCAL time. Result: every displayed time was
+#   1 hour behind in Cameroon (UTC+1). Emitting "...Z" tells every
+#   client the value is UTC, and each client then renders it in
+#   the user's own local timezone automatically.
+#
+# OOP Principle: Single Responsibility, Encapsulation — models
+#   never format datetimes themselves; they delegate here.
+# =============================================================
+class ApiTimestamp:
+
+    @staticmethod
+    def to_iso(dt: datetime | None) -> str | None:
+        """Serialize a stored (naive-UTC) datetime as ISO-8601 UTC ("Z")."""
+        if dt is None:
+            return None
+        if dt.tzinfo is None:                      # DB gives us naive UTC
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+# =============================================================
 # USER MODEL
 # =============================================================
 class User(db.Model):
@@ -198,6 +228,8 @@ class Queue(db.Model):
 # =============================================================
 # TICKET MODEL
 # Added: printed (bool) — marks manually issued printed tickets
+# Added: called_at — stamped when the agent calls the ticket;
+#        drives the rolling real-wait average.
 # =============================================================
 class Ticket(db.Model):
     __tablename__ = 'tickets'
@@ -241,9 +273,9 @@ class Ticket(db.Model):
             "counter":             self.counter,
             "customer_identifier": self.customer_identifier,
             "printed":             self.printed,
-            "issued_at":           self.issued_at.isoformat() if self.issued_at else None,
-            "called_at":           self.called_at.isoformat() if self.called_at else None,
-            "estimated_serve_at":  self.estimated_serve_at.isoformat() if self.estimated_serve_at else None,
+            "issued_at":           ApiTimestamp.to_iso(self.issued_at),
+            "called_at":           ApiTimestamp.to_iso(self.called_at),
+            "estimated_serve_at":  ApiTimestamp.to_iso(self.estimated_serve_at),
             "carried_over_date":   str(self.carried_over_date) if self.carried_over_date else None,
         }
 
@@ -283,7 +315,7 @@ class InviteToken(db.Model):
             "invite_url": f"{base_url}/invite/{self.token}",
             "admin_role": self.admin_role,
             "used":       self.used,
-            "expires_at": self.expires_at.isoformat(),
+            "expires_at": ApiTimestamp.to_iso(self.expires_at),
         }
 
     def __repr__(self):
@@ -358,11 +390,12 @@ class Notification(db.Model):
             "body":            self.body,
             "meta":            self.meta,
             "read":            self.read,
-            "created_at":      self.created_at.isoformat(),
+            "created_at":      ApiTimestamp.to_iso(self.created_at),
         }
 
     def __repr__(self):
         return f"<Notification service_id={self.service_id} type={self.type} read={self.read}>"
+
 
 # =============================================================
 # DEVICE TOKEN MODEL  (#8 — push notifications)
@@ -429,8 +462,8 @@ class SwapRequest(db.Model):
             "requester_ticket_id":  str(self.requester_ticket_id),
             "target_ticket_id":     str(self.target_ticket_id),
             "status":               self.status,
-            "created_at":           self.created_at.isoformat() if self.created_at else None,
-            "responded_at":         self.responded_at.isoformat() if self.responded_at else None,
+            "created_at":           ApiTimestamp.to_iso(self.created_at),
+            "responded_at":         ApiTimestamp.to_iso(self.responded_at),
         }
 
     def __repr__(self):
